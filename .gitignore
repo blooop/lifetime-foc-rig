@@ -1,0 +1,11 @@
+# PlatformIO build output (also covered by firmware/.gitignore)
+.pio/
+firmware/.pio/
+
+# Editor
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
