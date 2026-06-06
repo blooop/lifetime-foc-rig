@@ -21,8 +21,8 @@ real *data* USB cable). Runs on Linux and macOS via [pixi](https://pixi.sh).
   trapezoidal motion profiler** — see [ENDSTOPS.md](ENDSTOPS.md). Extra Commander
   letters: `E` (endstops/homing) and `P` (motion profile).
 - **Model torque estimate** (τ = Kt·(Vq−Ke·ω)/R) from the clean Vq signal; set R/KV,
-  Kt-override for calibration. The inline current sense is linked read-only (`skip_align`)
-  for future measured-Iq torque, but its ADC reading isn't usable yet (bring-up TODO).
+  Kt-override for calibration. The inline current sense is linked read-only (`skip_align`);
+  its measured Iq is now usable (verified) and is the reference for calibrating the model.
 - **5% overtravel backstop** (auto-armed by a full home; disables the motor if a
   failed hall lets the carriage run 5% of travel past where the endstop should be),
   plus a **serial-heartbeat watchdog** (de-energizes if the panel goes silent).
@@ -66,7 +66,8 @@ shows live trends during a run; `pixi run plot` reopens that view for a finished
 - foc_current torque control caused a runaway here — firmware is voltage-based only.
   The current sense is linked **read-only** (`skip_align`; torque_controller stays voltage); never foc_current.
 - Torque readout is a **Vq model estimate** (set R + KV in the panel). The current sense's
-  measured Iq is not usable yet (ESP32 ADC bring-up TODO) — that's why torque stays model-based.
+  measured Iq **is** usable (verified) — the monitor emits it in mA, the panel converts to amps —
+  but torque stays model-based for now; measured Iq is the calibration reference / future torque source.
 - The 5% backstop and lifecycle slip metric arm/track off a full auto-home (`EH`), not a bare `EZ`.
 - Only one program may own the serial port at a time — close the panel before `monitor`/`lifecycle`.
 - Original makerbase repo (docs/schematics/examples) is a separate read-only reference checkout

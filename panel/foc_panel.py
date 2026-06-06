@@ -36,7 +36,7 @@ def find_serial_port():
 
 MODES = {
     'Torque (V)': (['MC0', 'MT0'], -2.0, 2.0, 'V'),
-    'Velocity':   (['MC1'],        -20.0, 20.0, 'rad/s'),
+    'Velocity':   (['MC1'],        -100.0, 100.0, 'rad/s'),
     'Angle':      (['MC2'],        -12.57, 12.57, 'rad'),
 }
 SLIDER_STEPS = 1000
@@ -150,7 +150,9 @@ class SerialWorker(QtCore.QThread):
                     v = [float(p) for p in parts]
                 except ValueError:
                     self.line.emit(s); continue
-                self.telem.emit(v[0], v[1], v[3], v[5], v[6])   # target, Vq, Iq(meas), velocity, angle
+                # v[3] is the monitor's Iq field in MILLIAMPS (firmware prints c.q*1000);
+                # convert to amps so "Iq (meas)" matches its label and the lifecycle [A] thresholds.
+                self.telem.emit(v[0], v[1], v[3] / 1000.0, v[5], v[6])   # target, Vq, Iq(meas)[A], velocity, angle
                 if self.tuning:
                     self._tune_step(time.monotonic(), v[5])
                 continue
@@ -293,9 +295,9 @@ class Panel(QtWidgets.QWidget):
 
         # limits
         lbox = QtWidgets.QGroupBox('Limits'); ll = QtWidgets.QFormLayout(lbox)
-        self.vlim = QtWidgets.QDoubleSpinBox(); self.vlim.setRange(0, 12); self.vlim.setValue(1.0); self.vlim.setSingleStep(0.5)
+        self.vlim = QtWidgets.QDoubleSpinBox(); self.vlim.setRange(0, 12); self.vlim.setValue(3.0); self.vlim.setSingleStep(0.5)
         self.vlim.editingFinished.connect(lambda: self.worker.send(f"MLU{self.vlim.value():.2f}"))
-        self.velim = QtWidgets.QDoubleSpinBox(); self.velim.setRange(0, 100); self.velim.setValue(20); self.velim.setSingleStep(5)
+        self.velim = QtWidgets.QDoubleSpinBox(); self.velim.setRange(0, 200); self.velim.setValue(100); self.velim.setSingleStep(5)
         self.velim.editingFinished.connect(lambda: self.worker.send(f"MLV{self.velim.value():.1f}"))
         ll.addRow('Voltage limit [V]', self.vlim); ll.addRow('Velocity limit [rad/s]', self.velim)
         left.addWidget(lbox)
@@ -304,7 +306,7 @@ class Panel(QtWidgets.QWidget):
         pbox = QtWidgets.QGroupBox('Motion profile'); pl = QtWidgets.QFormLayout(pbox)
         self.prof_en = QtWidgets.QCheckBox('enable trapezoidal profiling'); self.prof_en.setChecked(True)
         self.prof_en.toggled.connect(lambda on: self.worker.send(f"PE{1 if on else 0}"))
-        self.prof_acc = QtWidgets.QDoubleSpinBox(); self.prof_acc.setRange(1, 2000); self.prof_acc.setValue(50); self.prof_acc.setSingleStep(5)
+        self.prof_acc = QtWidgets.QDoubleSpinBox(); self.prof_acc.setRange(1, 2000); self.prof_acc.setValue(300); self.prof_acc.setSingleStep(5)
         self.prof_acc.editingFinished.connect(lambda: self.worker.send(f"PA{self.prof_acc.value():.1f}"))
         pl.addRow(self.prof_en); pl.addRow('Acceleration [rad/s²]', self.prof_acc)
         left.addWidget(pbox)
@@ -496,7 +498,7 @@ class Panel(QtWidgets.QWidget):
     def _build_lifecycle(self, parent):
         box = QtWidgets.QGroupBox('Lifecycle test'); fl = QtWidgets.QFormLayout(box)
         self.lc_cycles = QtWidgets.QSpinBox(); self.lc_cycles.setRange(1, 10_000_000); self.lc_cycles.setValue(1000)
-        self.lc_vmeas = QtWidgets.QDoubleSpinBox(); self.lc_vmeas.setRange(0.2, 20); self.lc_vmeas.setValue(3.0); self.lc_vmeas.setSingleStep(0.5)
+        self.lc_vmeas = QtWidgets.QDoubleSpinBox(); self.lc_vmeas.setRange(0.2, 100); self.lc_vmeas.setValue(3.0); self.lc_vmeas.setSingleStep(0.5)
         self.lc_iqab = QtWidgets.QDoubleSpinBox(); self.lc_iqab.setRange(0.1, 20); self.lc_iqab.setValue(5.0); self.lc_iqab.setSingleStep(0.5)
         self.lc_slipab = QtWidgets.QDoubleSpinBox(); self.lc_slipab.setRange(1, 200); self.lc_slipab.setValue(20); self.lc_slipab.setSingleStep(5); self.lc_slipab.setSuffix(' %')
         fl.addRow('Target cycles', self.lc_cycles)
