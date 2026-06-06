@@ -67,7 +67,9 @@ Endstops use a second Commander letter **`E`**: `EH`=auto-home (MIN→MAX→cent
 Motion profile uses a third letter **`P`**: `PA<v>`=acceleration [rad/s²], `PE<0|1>`=enable/disable profiling.
 
 ## GUI (`panel/foc_panel.py`)
-PyQt5 + pyqtgraph. Mode radio buttons, target slider, Enable/STOP, limit fields, live PID-tuning fields,
+PyQt5 + pyqtgraph. The left control column is in a **scroll area** (never forces the window
+taller than the screen); **PID tuning is a collapsible group, collapsed by default**.
+Mode radio buttons, target slider, Enable/STOP, limit fields, (collapsible) PID-tuning fields,
 two live plots (target/vel/angle, and torque), a measured-torque readout, and a
 **relay-feedback velocity auto-tuner**.
 - **Torque is a model estimate** from `Vq`: `Iq=(Vq−Ke·ω)/R`, `τ=Kt·Iq`, `Kt=Ke=9.549/KV`. Set

@@ -246,8 +246,15 @@ class Panel(QtWidgets.QWidget):
 
     def _build(self):
         main = QtWidgets.QHBoxLayout(self)
-        left = QtWidgets.QVBoxLayout()
-        main.addLayout(left, 0)
+        # Left controls live in a scroll area so the (tall) stack of groups never forces
+        # the window taller than the screen — a vertical scrollbar appears only if needed.
+        left_w = QtWidgets.QWidget()
+        left = QtWidgets.QVBoxLayout(left_w)
+        scroll = QtWidgets.QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setMinimumWidth(380); scroll.setWidget(left_w)
+        main.addWidget(scroll, 0)
 
         # mode radios
         mbox = QtWidgets.QGroupBox('Control mode'); ml = QtWidgets.QHBoxLayout(mbox)
@@ -297,8 +304,12 @@ class Panel(QtWidgets.QWidget):
         # endstops & homing
         self._build_endstops(left)
 
-        # tuning
-        gbox = QtWidgets.QGroupBox('PID tuning'); gl = QtWidgets.QFormLayout(gbox)
+        # tuning — collapsible (rarely needed once tuned; checkbox in the title expands it).
+        # The auto-tuner still writes its result into velP/velI even while collapsed.
+        gbox = QtWidgets.QGroupBox('PID tuning'); gbox.setCheckable(True); gbox.setChecked(False)
+        gbox.setToolTip('Manual PID fields — click to expand')
+        gv = QtWidgets.QVBoxLayout(gbox)
+        ginner = QtWidgets.QWidget(); gl = QtWidgets.QFormLayout(ginner); gl.setContentsMargins(0, 0, 0, 0)
         def mk(lo, hi, val, step, dec, cmd):
             sb = QtWidgets.QDoubleSpinBox(); sb.setRange(lo, hi); sb.setValue(val); sb.setSingleStep(step); sb.setDecimals(dec)
             sb.editingFinished.connect(lambda c=cmd, s=sb: self.worker.send(f"{c}{s.value():.4f}"))
@@ -307,6 +318,8 @@ class Panel(QtWidgets.QWidget):
         self.angP = mk(0, 100, 10.0, 1.0, 2, 'MAP'); self.velF = mk(0, 0.5, 0.02, 0.005, 3, 'MVF')
         gl.addRow('Velocity P', self.velP); gl.addRow('Velocity I', self.velI)
         gl.addRow('Angle P', self.angP); gl.addRow('Velocity LPF Tf', self.velF)
+        gv.addWidget(ginner); ginner.setVisible(False)        # collapsed by default
+        gbox.toggled.connect(ginner.setVisible)
         left.addWidget(gbox)
 
         # auto-tune
