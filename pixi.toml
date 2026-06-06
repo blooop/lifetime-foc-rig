@@ -17,6 +17,7 @@ numpy = "*"
 # Ports are auto-detected (PlatformIO for flash/monitor; the panel detects the CH340
 # by USB VID:PID). Override with the FOC_PORT env var or `--upload-port`/`-p` if you
 # have multiple serial devices: e.g. `FOC_PORT=/dev/tty.usbserial-110 pixi run panel`.
+install-driver = { cmd = "bash scripts/install-ch340-driver.sh", description = "Install/verify the CH340 USB-serial driver (macOS; no-op on Linux)" }
 build = { cmd = "pio run", cwd = "firmware", description = "Compile the firmware" }
 flash = { cmd = "pio run -t upload", cwd = "firmware", description = "Build + flash over USB (auto-detects the port)" }
 monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description = "Serial monitor (close the panel first — one owner of the port)" }

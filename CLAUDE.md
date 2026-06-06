@@ -31,6 +31,7 @@ deprecated/fallback only — don't add new dependencies on them.
 Run via pixi tasks from the repo root. **Serial port is auto-detected** (CH340 by USB
 VID); override with `FOC_PORT=<dev>` or `--port`/`--upload-port` if multiple devices.
 ```
+pixi run install-driver   # CH340 USB-serial driver (macOS; no-op on Linux)
 pixi run build       # compile firmware
 pixi run flash       # build + flash over USB (auto-detect port)
 pixi run monitor     # serial monitor @115200 (close the panel first)

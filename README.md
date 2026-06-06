@@ -40,6 +40,13 @@ pixi install
 ```
 This works on Linux and macOS (Intel + Apple Silicon).
 
+The board uses a CH340 USB-serial chip. Linux has the driver in-kernel; recent macOS
+usually does too. If the port doesn't appear on macOS, install the WCH driver:
+```
+pixi run install-driver
+```
+(then approve it in System Settings > Privacy & Security and replug the board).
+
 ## Commands
 Run everything via pixi tasks (from the repo root). The serial port is auto-detected
 (CH340 by USB VID); override with `FOC_PORT=/dev/tty.usbserial-XXXX` or `--port` if you
