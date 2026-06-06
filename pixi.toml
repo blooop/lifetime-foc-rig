@@ -23,3 +23,4 @@ flash = { cmd = "pio run -t upload", cwd = "firmware", description = "Build + fl
 monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description = "Serial monitor (close the panel first — one owner of the port)" }
 panel = { cmd = "python foc_panel.py", cwd = "panel", description = "Launch the PyQt control panel (12 V must be on so the board calibrates)" }
 lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Headless lifecycle endurance runner — args pass through, e.g. pixi run lifecycle --cycles 1000 --vmeas 8" }
+plot = { cmd = "python plot_lifecycle.py", cwd = "panel", description = "View a finished lifecycle run (newest by default; or `pixi run plot <run_dir>`)" }
