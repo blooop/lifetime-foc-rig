@@ -97,6 +97,7 @@ class SerialWorker(QtCore.QThread):
                 self.line.emit(f"!! cannot open {port}: {e}; retrying in 2s")
                 self.msleep(2000); continue
             self.line.emit(f"opened {port} @ {BAUD}")
+            self.reset_board()      # pulse reset so the board reboots and re-runs calibration on connect
             self._read_loop()
             try:
                 if self.ser: self.ser.close()
@@ -690,6 +691,12 @@ class LifecycleWindow(QtWidgets.QWidget):
 
 
 if __name__ == '__main__':
+    import signal
     app = QtWidgets.QApplication(sys.argv)
     p = Panel(); p.show()
+    # Ctrl-C in the terminal -> clean shutdown: close the window so closeEvent runs
+    # (stops the worker and sends ME0). A periodic no-op timer lets Python's signal
+    # handler actually run while Qt's C++ event loop is executing.
+    signal.signal(signal.SIGINT, lambda *_: p.close())
+    _sigtimer = QtCore.QTimer(); _sigtimer.start(200); _sigtimer.timeout.connect(lambda: None)
     sys.exit(app.exec_())

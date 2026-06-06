@@ -60,7 +60,7 @@ Only one program can own the serial port at a time — close the GUI before `mon
 ## Commander serial protocol (what the GUI sends)
 `MC0`=torque-voltage, `MC1`=velocity, `MC2`=angle · `M<x>`=target · `ME1`/`ME0`=enable/disable ·
 `MLU<v>`=voltage limit, `MLV<v>`=velocity limit · `MVP/MVI/MVD<x>`=velocity PID · `MAP<x>`=angle P ·
-`MVF<x>`=velocity LPF Tf · `MMD<n>`=monitor downsample. Opening the port auto-resets the board (re-calibrates) — harmless.
+`MVF<x>`=velocity LPF Tf · `MMD<n>`=monitor downsample. The panel **pulses a reset on connect** (RTS), so the board re-runs calibration on every panel startup. Ctrl-C in the terminal shuts the panel down cleanly (closeEvent → `ME0`).
 Endstops use a second Commander letter **`E`**: `EH`=auto-home (MIN→MAX→center), `EX`=abort homing, `EZ`=zero here, `EK`=watchdog keepalive (no side effect), `ES<v>`=seek speed,
 `ED-1`/`ED1`=seek-MIN direction (− / + velocity), `EAE/EAL/EAP`+`EBE/EBL/EBP`=endstop A/B enable/active-low/pin,
 `ELE<0|1>`=soft-limit enable, `ELN<v>`/`ELX<v>`=soft min/max travel (home-relative rad).
