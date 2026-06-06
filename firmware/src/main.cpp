@@ -44,8 +44,22 @@ TwoWire I2Cone = TwoWire(0);
 BLDCMotor motor = BLDCMotor(7);
 BLDCDriver3PWM driver = BLDCDriver3PWM(32, 33, 25, 12);
 
+// READ-ONLY current sense (Motor 0 inline shunts: 0.01 ohm, gain 50, ADC 39/36 —
+// per makerbase example #14). torque_controller stays VOLTAGE, so this only feeds
+// the monitor (measured Iq/Id at stream indices 3/4); the current-control LOOP is
+// never engaged. Do NOT switch to foc_current — that caused a runaway here.
+InlineCurrentSense current_sense = InlineCurrentSense(0.01f, 50.0f, 39, 36);
+
 Commander command = Commander(Serial);
-void doMotor(char* cmd) { command.motor(&motor, cmd); }
+
+// Serial-heartbeat watchdog: any command pets it; if the panel goes silent while the
+// motor is enabled (and not homing) for too long, disable the driver. The panel sends
+// a ~1 Hz EK keepalive so slow strokes don't false-trip.
+#define WATCHDOG_MS 3000UL
+unsigned long g_last_cmd_ms = 0;
+inline void petWatchdog() { g_last_cmd_ms = millis(); }
+
+void doMotor(char* cmd) { petWatchdog(); command.motor(&motor, cmd); }
 
 #define UNDERVOLTAGE_THRES 11.1
 float get_vin_Volt() { return analogReadMilliVolts(13) * 8.5 / 1000; }
@@ -90,6 +104,7 @@ struct Endstop {
   bool    triggered  = false;     // debounced, enable-gated state
   bool    last_read  = true;      // last raw level (idles HIGH)
   uint8_t count      = 0;
+  bool    just_triggered = false; // set on a clear->triggered edge; consumer clears it
 
   // INPUT only (safe for the GPIO-5 strapping pin); INPUT_PULLUP is a safe default.
   void begin(uint8_t p) { pin = p; pinMode(pin, INPUT_PULLUP); last_read = digitalRead(pin); count = 0; }
@@ -98,11 +113,13 @@ struct Endstop {
     bool r = digitalRead(pin);
     if (r == last_read) { if (count < ENDSTOP_DEBOUNCE) count++; }
     else                { count = 0; last_read = r; }
+    bool prev = triggered;
     if (count >= ENDSTOP_DEBOUNCE) {
       bool t = active_low ? (r == LOW) : (r == HIGH);
       triggered = enabled && t;
     }
     if (!enabled) triggered = false;
+    if (triggered && !prev) just_triggered = true;   // rising edge -> latch in loop()
   }
 };
 
@@ -130,6 +147,24 @@ bool homingActive() { return g_home_phase != HOME_IDLE; }
 bool  g_soft_enabled = false;
 float g_soft_min = -1.0e6f, g_soft_max = 1.0e6f;
 
+// ---- 5% overtravel SAFETY backstop (auto-armed by a full EH home, NOT EZ) ----
+// Catches a failed/missed hall: if the carriage runs past where an endstop should
+// be by more than OVERTRAVEL_FRAC of the measured travel, kill the driver before it
+// can reach the physical hard stop. Disable-on-trip, NO latch (user re-enables),
+// fires only while heading FURTHER past (backing away is allowed), not defeatable.
+// Lines are in absolute shaft_angle and recomputed every home so they track slip.
+#define OVERTRAVEL_FRAC 0.05f     // 5% of full travel past the endstop
+#define OVERTRAVEL_SAFE 0.5f      // cap cycle speed so worst-case stop uses <= this fraction of the 5%
+bool  g_backstop_armed  = false;
+float g_backstop_margin = 0.0f;   // rad past an endstop (= OVERTRAVEL_FRAC * travel) that trips it
+int   g_backstop_fired  = 0;      // 0=none, 1=tripped past MIN, 2=tripped past MAX
+float g_v_safe          = 1.0e6f; // max |velocity target| so overshoot stays inside the 5% margin
+// "Past MIN" / "past MAX" are expressed in the SAME g_home_dir convention as the hard
+// endstops (g_angle_min/g_angle_max are the shaft angles captured at the switches):
+//   toward-MIN angle direction = +g_home_dir ; toward-MAX = -g_home_dir.
+// So past MIN  <=>  g_home_dir*(shaft_angle - g_angle_min) >  margin
+//    past MAX  <=>  g_home_dir*(shaft_angle - g_angle_max) < -margin
+
 float positionFromHome() { return motor.shaft_angle - g_home_offset; }
 
 // Clamp motor.target each loop so it can never drive further INTO a triggered
@@ -148,6 +183,26 @@ void enforceTravelLimits() {
   bool intoMax = (g_home_dir * d < 0.0f);   // heading toward MAX
   if ((minT && intoMin) || (maxT && intoMax)) {
     motor.target = angleMode ? motor.shaft_angle : 0.0f;   // hold / stop
+  }
+
+  // 5% overtravel backstop: a missed hall let the carriage run past where the
+  // endstop should be -> kill the driver before the physical stop. Only while
+  // heading FURTHER past; backing away is allowed (so re-enable won't re-trip).
+  if (g_backstop_armed) {
+    bool pastMin = (g_home_dir * (motor.shaft_angle - g_angle_min) >  g_backstop_margin) && intoMin;
+    bool pastMax = (g_home_dir * (motor.shaft_angle - g_angle_max) < -g_backstop_margin) && intoMax;
+    if (pastMin || pastMax) {
+      g_backstop_fired = pastMin ? 1 : 2;
+      motor.disable();
+      motor.target = angleMode ? motor.shaft_angle : 0.0f;
+      Serial.printf("!! OVERTRAVEL BACKSTOP past %s -> motor DISABLED (re-enable + re-home)\n",
+                    pastMin ? "MIN" : "MAX");
+    }
+    // Cap velocity-mode speed so a reverse-on-trigger stop stays inside the 5% margin.
+    if (!angleMode) {
+      if (motor.target >  g_v_safe) motor.target =  g_v_safe;
+      if (motor.target < -g_v_safe) motor.target = -g_v_safe;
+    }
   }
 
   // Soft limits (position-based; +velocity always increases position). Homed backstop.
@@ -224,6 +279,7 @@ void applyMotionProfile(float dt) {
 
 // Commander 'P' (motion profile): PA<v> accel [rad/s^2], PE<0|1> enable.
 void doProfile(char* cmd) {
+  petWatchdog();
   switch (cmd[0]) {
     case 'A': g_max_accel = fmaxf(atof(cmd + 1), 1.0f); Serial.printf("Profile accel=%.1f rad/s^2\n", g_max_accel); break;
     case 'E': g_profile_enabled = atoi(cmd + 1) != 0;   Serial.printf("Motion profile %s\n", g_profile_enabled ? "ON" : "OFF"); break;
@@ -243,6 +299,8 @@ void startHoming() {
   if (!motor.enabled) { Serial.println(F("Home refused: enable the motor first (ME1).")); return; }
   if (!esMin.enabled || !esMax.enabled) { Serial.println(F("Home refused: enable both endstops first.")); return; }
   if (homingActive()) return;
+  g_backstop_armed = false;   // disarm while seeking (stale lines/clamp must not fight the seek)
+  g_backstop_fired = 0;
   g_prev_controller = motor.controller;
   motor.controller  = MotionControlType::velocity;   // seek phases drive a velocity
   g_home_phase = HOME_SEEK_MIN;
@@ -282,12 +340,22 @@ void homingStep() {
         g_soft_min    = fminf(g_angle_min, g_angle_max) - g_home_offset;   // home-relative
         g_soft_max    = fmaxf(g_angle_min, g_angle_max) - g_home_offset;
         g_homed       = true;
+        // Arm the 5% overtravel backstop from the measured travel (tracks slip every
+        // home), and derive the safe cycle speed so a reverse-on-trigger stop stays
+        // well inside that 5% margin. EZ does NOT reach here -> stays disarmed.
+        float travel  = fabsf(g_angle_max - g_angle_min);
+        g_backstop_margin = OVERTRAVEL_FRAC * travel;
+        g_v_safe          = sqrtf(2.0f * g_max_accel * OVERTRAVEL_SAFE * OVERTRAVEL_FRAC * travel);
+        g_backstop_fired  = 0;
+        g_backstop_armed  = true;
         motor.controller = MotionControlType::angle;    // drive back to center
         motor.target  = g_home_offset;
         g_home_phase  = HOME_CENTER;
         g_home_t0     = millis();
         Serial.printf("  MAX @ %.3f rad; center=%.3f, travel=%.3f rad; centering...\n",
-                      g_angle_max, g_home_offset, fabsf(g_angle_max - g_angle_min));
+                      g_angle_max, g_home_offset, travel);
+        Serial.printf("  Backstop armed: margin=%.3f rad past each endstop; v_safe=%.2f rad/s\n",
+                      g_backstop_margin, g_v_safe);
       } else {
         motor.target = -g_home_dir * g_home_speed;      // toward MAX
       }
@@ -304,15 +372,16 @@ void homingStep() {
 }
 
 // Endstop/position telemetry: a line distinct from the 7-float motor monitor.
-//   E <minTrig> <maxTrig> <homed> <homePhase 0=idle/1=seekMin/2=seekMax/3=center> <position-from-home>
+//   E <minTrig> <maxTrig> <homed> <homePhase 0=idle/1=seekMin/2=seekMax/3=center>
+//     <position-from-home> <backstopFired 0=none/1=pastMin/2=pastMax>
 unsigned long g_es_t_last = 0;
 void streamEndstops() {
   unsigned long now = millis();
   if (now - g_es_t_last < 50) return;     // ~20 Hz, plenty for indicators
   g_es_t_last = now;
-  Serial.printf("E\t%d\t%d\t%d\t%d\t%.4f\n",
+  Serial.printf("E\t%d\t%d\t%d\t%d\t%.4f\t%d\n",
                 esMin.triggered ? 1 : 0, esMax.triggered ? 1 : 0,
-                g_homed ? 1 : 0, (int)g_home_phase, positionFromHome());
+                g_homed ? 1 : 0, (int)g_home_phase, positionFromHome(), g_backstop_fired);
 }
 
 // Per-endstop config: sub = E<0|1> enable, L<0|1> active-low, P<n> GPIO pin.
@@ -336,7 +405,9 @@ void cfgEndstop(Endstop& es, char* s, char tag) {
 //                  sub: E<0|1> enable, L<0|1> active-low, P<n> pin
 //   LE<0|1>      soft-limit enable        (LN<v>/LX<v> set min/max travel, home-relative rad)
 void doEndstop(char* cmd) {
+  petWatchdog();
   switch (cmd[0]) {
+    case 'K': break;   // keepalive: no side effect, just pets the watchdog (above)
     case 'H': startHoming(); break;
     case 'X': if (homingActive()) stopHoming("Homing aborted."); break;
     case 'Z': g_home_offset = motor.shaft_angle; g_homed = true; Serial.println(F("Zero set at current position.")); break;
@@ -349,7 +420,7 @@ void doEndstop(char* cmd) {
       else if (cmd[1] == 'N') { g_soft_min = atof(cmd + 2); Serial.printf("Soft min=%.3f\n", g_soft_min); }
       else if (cmd[1] == 'X') { g_soft_max = atof(cmd + 2); Serial.printf("Soft max=%.3f\n", g_soft_max); }
       break;
-    default: Serial.println(F("E? H X Z S<v> D<v> A.. B.. LE<0|1> LN<v> LX<v>")); break;
+    default: Serial.println(F("E? H X Z K S<v> D<v> A.. B.. LE<0|1> LN<v> LX<v>")); break;
   }
 }
 // ======================= END ENDSTOPS / HOMING / LIMITS =======================
@@ -384,6 +455,16 @@ void setup() {
   driver.init();
   motor.linkDriver(&driver);
 
+  // Link current sense for READING ONLY (torque_controller stays voltage below).
+  // 2.2.1: init() takes no driver; initFOC() would run driverAlign() to match phases.
+  // We SKIP that alignment: it fails on this board at the low align voltage (small,
+  // noisy shunt current) and an align failure aborts the WHOLE initFOC (no commutation
+  // -> railed current on enable). We don't use the current LOOP, only the reading, so
+  // alignment is unnecessary; Iq sign/scale is good enough for torque trends.
+  current_sense.init();
+  current_sense.skip_align = true;
+  motor.linkCurrentSense(&current_sense);
+
   motor.foc_modulation    = FOCModulationType::SpaceVectorPWM;
   motor.controller        = MotionControlType::velocity;
   motor.torque_controller = TorqueControlType::voltage;
@@ -408,6 +489,7 @@ void setup() {
   sensor.armed = true;       // arm glitch rejection after calibration
   motor.target = 0;
   motor.disable();           // boot disabled
+  petWatchdog();             // don't trip the watchdog before the first command
 
   command.add('M', doMotor, "motor");
   command.add('E', doEndstop, "endstop");
@@ -426,9 +508,18 @@ void loop() {
   motor.loopFOC();
   esMin.update();             // read endstops every control loop (after loopFOC,
   esMax.update();             //   before move) so shaft_angle is fresh
+  // Slip telemetry: latch the continuous shaft_angle at the exact debounced hall
+  // edge (precise, immune to the 20 Hz E-line jitter). Panel attaches the cycle#.
+  if (esMin.just_triggered) { esMin.just_triggered = false; Serial.printf("S\t0\t%.5f\n", motor.shaft_angle); }
+  if (esMax.just_triggered) { esMax.just_triggered = false; Serial.printf("S\t1\t%.5f\n", motor.shaft_angle); }
   homingStep();               // non-blocking; commands a seek velocity while homing
-  enforceTravelLimits();      // clamp target out of triggered limits (hard + soft)
+  enforceTravelLimits();      // clamp target out of triggered limits (hard + soft + backstop)
   applyMotionProfile(dt);     // accel-limit the command (trapezoidal) before move
+  // Heartbeat watchdog: panel silent while enabled (and not homing) -> de-energize.
+  if (motor.enabled && !homingActive() && (millis() - g_last_cmd_ms) > WATCHDOG_MS) {
+    motor.disable();
+    Serial.println(F("!! Comms watchdog: no command -> motor DISABLED"));
+  }
   motor.move();
   motor.monitor();
   streamEndstops();

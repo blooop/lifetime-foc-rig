@@ -1,3 +1,9 @@
+# pixi environment (regenerate with `pixi install`; pixi.lock IS committed)
+.pixi/
+
+# lifecycle endurance test run data
+panel/lifecycle_runs/
+
 # PlatformIO build output (also covered by firmware/.gitignore)
 .pio/
 firmware/.pio/

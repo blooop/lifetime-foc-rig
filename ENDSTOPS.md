@@ -103,9 +103,10 @@ unchanged; **`E`** (endstops) and **`P`** (motion profile) are new.
 ### `E` — endstops / homing / soft limits
 | Command | Effect |
 |---------|--------|
-| `EH` | Auto-home: seek MIN → seek MAX → center (motor must be enabled) |
+| `EH` | Auto-home: seek MIN → seek MAX → center (motor must be enabled). Also arms the 5% overtravel backstop. |
 | `EX` | Abort homing |
-| `EZ` | Set current shaft angle as home/zero (no motion) |
+| `EZ` | Set current shaft angle as home/zero (no motion). Does **not** arm the backstop (no travel reference). |
+| `EK` | Watchdog keepalive — no side effect, just pets the comms watchdog (panel sends ~1 Hz) |
 | `ES<v>` | Homing seek speed [rad/s], e.g. `ES20` |
 | `ED1` / `ED-1` | Seek-MIN direction: `D1` = MIN is the +velocity way (default), `D-1` = −velocity |
 | `EAE<0\|1>` / `EBE<0\|1>` | Enable endstop A / B |
@@ -125,12 +126,30 @@ Alongside the existing 7-field motor monitor (`target, Vq, Vd, Iq, Id, vel, angl
 the firmware streams a distinct endstop line at ~20 Hz:
 
 ```
-E\t<minTrig>\t<maxTrig>\t<homed>\t<homePhase>\t<position-from-home>
-        0/1        0/1       0/1   0=idle,1=seekMin,2=seekMax,3=center   rad
+E\t<minTrig>\t<maxTrig>\t<homed>\t<homePhase>\t<position-from-home>\t<backstopFired>
+        0/1        0/1       0/1   0=idle,1=seekMin,2=seekMax,3=center   rad   0=none,1=pastMin,2=pastMax
 ```
 
-The GUI parses the `E\t` prefix separately, so the monitor stream and the velocity
-auto-tuner (which reads velocity at index 5) are untouched.
+Plus, on each hall edge (rising), a distinct one-shot **slip** line latched at the
+control-loop rate (precise, immune to the 20 Hz E-line jitter):
+
+```
+S\t<which>\t<shaft_angle>
+     0=min/1=max    rad (continuous)
+```
+
+The GUI parses the `E\t`/`S\t` prefixes separately, so the monitor stream and the velocity
+auto-tuner (which reads velocity at index 5) are untouched. Measured `Iq` (index 3) is now
+populated by the read-only current sense → panel torque `τ = Kt·Iq`.
+
+### Safety: 5% overtravel backstop & comms watchdog
+The hall switches are the **working** travel limits (hit every cycle); separate physical hard
+stops sit beyond them and must never be reached. After a full `EH` home, the firmware arms a
+backstop at `endstop ± 5%·travel` (recomputed each home, so it tracks slip). If a failed/missed
+hall lets the carriage run past that line **while heading further past**, the driver is disabled
+(no latch — re-enable + re-home). It also caps the velocity-mode speed (`v_safe`) so a
+reverse-on-trigger stop stays inside the 5% margin. Independently, a serial-heartbeat watchdog
+disables the motor if no command arrives for ~3 s while enabled (suppressed during homing).
 
 ---
 

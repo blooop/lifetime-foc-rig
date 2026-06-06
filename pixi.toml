@@ -1,0 +1,24 @@
+[workspace]
+name = "mks-foc"
+version = "0.1.0"
+description = "MKS ESP32 FOC V2.0 — firmware (PlatformIO) + PyQt control panel + rolling-drive lifecycle test"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+
+[dependencies]
+python = "3.12.*"
+platformio = "*"      # firmware build/flash (pinned Python avoids the 3.14 breakage)
+pyqt = "5.*"          # PyQt5 — the panel/lifecycle GUI
+pyqtgraph = "*"
+pyserial = "*"
+numpy = "*"
+
+[tasks]
+# Ports are auto-detected (PlatformIO for flash/monitor; the panel detects the CH340
+# by USB VID:PID). Override with the FOC_PORT env var or `--upload-port`/`-p` if you
+# have multiple serial devices: e.g. `FOC_PORT=/dev/tty.usbserial-110 pixi run panel`.
+build = { cmd = "pio run", cwd = "firmware", description = "Compile the firmware" }
+flash = { cmd = "pio run -t upload", cwd = "firmware", description = "Build + flash over USB (auto-detects the port)" }
+monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description = "Serial monitor (close the panel first — one owner of the port)" }
+panel = { cmd = "python foc_panel.py", cwd = "panel", description = "Launch the PyQt control panel (12 V must be on so the board calibrates)" }
+lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Headless lifecycle endurance runner — args pass through, e.g. pixi run lifecycle --cycles 1000 --vmeas 8" }
