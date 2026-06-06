@@ -613,12 +613,23 @@ class Panel(QtWidgets.QWidget):
             msg = f"FAILED: {r.get('reason','?')}. Try larger d / different bias."
         self.tune_lbl.setText(msg); self.log.appendPlainText('# auto-tune ' + msg)
 
+    def push_limits(self):
+        """Make the GUI the source of truth for the operating ceilings on (re)connect.
+        The board re-inits to its firmware defaults on reset; push the panel's
+        voltage/velocity/accel + profiling state so they win without a reflash.
+        Accel (PA) must precede any EH home — v_safe is derived from it at home time."""
+        self.worker.send(f"MLU{self.vlim.value():.2f}")
+        self.worker.send(f"MLV{self.velim.value():.1f}")
+        self.worker.send(f"PA{self.prof_acc.value():.1f}")
+        self.worker.send(f"PE{1 if self.prof_en.isChecked() else 0}")
+
     def on_ready(self):
         self.set_controls_enabled(True)
         # A lifecycle run owns its own re-home on reconnect (LifecycleController._on_ready);
         # don't fight it. Otherwise, optionally auto-home on every connect.
         if self.lc and self.lc.running:
             return
+        self.push_limits()   # GUI-owned ceilings before any homing (v_safe needs PA set)
         if self.autohome_chk.isChecked():
             # Homing needs the motor + both endstops enabled. The board re-inits to
             # endstops-enabled on reset, but sync explicitly in case they were toggled off.

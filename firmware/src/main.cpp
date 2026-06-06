@@ -19,7 +19,7 @@ public:
   // speed (e.g. 20 rad/s homing) whenever a serial/I2C stall stretched the loop
   // period — the motor would briefly "cut out". Scaling by elapsed time keeps real
   // glitch rejection without tripping on fast travel, and self-heals after a stall.
-  float max_speed  = 40.0f;   // rad/s, ~2x velocity_limit headroom
+  float max_speed  = 200.0f;  // rad/s — boot value; loop() keeps it at ~2x velocity_limit
   float floor_step = 0.10f;   // rad, tolerate sensor jitter at tiny dt
   float getSensorAngle() override {
     float a = MagneticSensorI2C::getSensorAngle();
@@ -153,8 +153,8 @@ float g_soft_min = -1.0e6f, g_soft_max = 1.0e6f;
 // can reach the physical hard stop. Disable-on-trip, NO latch (user re-enables),
 // fires only while heading FURTHER past (backing away is allowed), not defeatable.
 // Lines are in absolute shaft_angle and recomputed every home so they track slip.
-#define OVERTRAVEL_FRAC 0.05f     // 5% of full travel past the endstop
-#define OVERTRAVEL_SAFE 0.5f      // cap cycle speed so worst-case stop uses <= this fraction of the 5%
+#define OVERTRAVEL_FRAC 0.20f     // 20% of full travel past the endstop (widened for high-speed runs)
+#define OVERTRAVEL_SAFE 0.5f      // cap cycle speed so worst-case stop uses <= this fraction of the margin
 bool  g_backstop_armed  = false;
 float g_backstop_margin = 0.0f;   // rad past an endstop (= OVERTRAVEL_FRAC * travel) that trips it
 int   g_backstop_fired  = 0;      // 0=none, 1=tripped past MIN, 2=tripped past MAX
@@ -227,7 +227,7 @@ void enforceTravelLimits() {
 // a stop at the target). It intercepts the value Commander/homing/limits wrote to
 // motor.target, shapes it, and writes the shaped value back before move().
 bool  g_profile_enabled = true;
-float g_max_accel  = 50.0f;       // rad/s^2 — velocity slew rate & angle-move accel
+float g_max_accel  = 300.0f;      // rad/s^2 — velocity slew rate & angle-move accel (sized so a 100 rad/s stop fits the margin)
 float g_prof_vel   = 0.0f;        // profiled velocity state
 float g_prof_pos   = 0.0f;        // profiled position state (angle mode)
 float g_cmd_target = 0.0f;        // latched command (what Commander/homing requested)
@@ -476,8 +476,8 @@ void setup() {
   motor.LPF_velocity.Tf = 0.02;
   motor.P_angle.P = 10;          // softened (was 20) for stable angle hold
 
-  motor.voltage_limit  = 1.0;
-  motor.velocity_limit = 20;
+  motor.voltage_limit  = 3.0;
+  motor.velocity_limit = 100;
 
   motor.useMonitoring(Serial);
   motor.monitor_downsample = 100;
@@ -504,6 +504,12 @@ void loop() {
   float dt = (t_prev == 0) ? 0.0f : (uint32_t)(now - t_prev) * 1e-6f;
   if (dt > 0.05f) dt = 0.05f;   // cap after a stall so the profile can't lurch
   t_prev = now;
+
+  // Glitch filter tracks velocity_limit live (~2x headroom) so a GUI `MLV` change
+  // scales it too — the filter must never sit below the commanded ceiling or it
+  // rejects legit motion and cuts the motor out. 40 rad/s floor keeps rejection
+  // sane at low limits / during the 20 rad/s homing seek.
+  sensor.max_speed = fmaxf(2.0f * motor.velocity_limit, 40.0f);
 
   motor.loopFOC();
   esMin.update();             // read endstops every control loop (after loopFOC,
