@@ -55,7 +55,7 @@ have multiple serial devices.
 pixi run build       # compile firmware
 pixi run flash       # build + flash over USB (auto-detects the port)
 pixi run monitor     # serial monitor (close the panel first)
-pixi run panel       # launch the PyQt control panel (12 V on so the board calibrates)
+pixi run gui         # launch the PyQt control panel (12 V on so the board calibrates)
 pixi run lifecycle --cycles 5000 --vmeas 3.0   # headless endurance run (close the panel first)
 pixi run plot        # view a finished run's wear trends + τ(pos) heatmap (newest, or pass a run dir)
 ```
