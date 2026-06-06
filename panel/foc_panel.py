@@ -244,6 +244,13 @@ class Panel(QtWidgets.QWidget):
         self._build()
         self.set_controls_enabled(False)
         self.worker.start()
+        # ~1 Hz watchdog keepalive (firmware WATCHDOG_MS=3 s). Without this, the board
+        # disables the motor 3 s after Enable when the GUI is idle (no lifecycle run
+        # feeding commands), so a later Auto-home is silently refused. EK has no side
+        # effect beyond petting the watchdog; harmless while disabled/connecting.
+        self._keepalive = QtCore.QTimer(self)
+        self._keepalive.timeout.connect(lambda: self.worker.send('EK'))
+        self._keepalive.start(1000)
 
     def _build(self):
         main = QtWidgets.QHBoxLayout(self)
@@ -437,6 +444,12 @@ class Panel(QtWidgets.QWidget):
         self.zero_btn = QtWidgets.QPushButton('Set zero here'); self.zero_btn.clicked.connect(lambda: self.worker.send('EZ'))
         hb.addWidget(self.home_btn); hb.addWidget(self.zero_btn)
         v.addLayout(hb)
+        # Auto-home on connect: after the board calibrates (every panel start / serial
+        # reconnect), enable the motor + endstops and run the homing sweep automatically.
+        # The carriage MOVES on launch, so this is an explicit (but default-on) opt-in.
+        self.autohome_chk = QtWidgets.QCheckBox('Auto-home on connect (carriage moves at startup)')
+        self.autohome_chk.setChecked(True)
+        v.addWidget(self.autohome_chk)
 
         # soft travel limits (home-relative)
         sl = QtWidgets.QFormLayout()
@@ -599,8 +612,21 @@ class Panel(QtWidgets.QWidget):
         self.tune_lbl.setText(msg); self.log.appendPlainText('# auto-tune ' + msg)
 
     def on_ready(self):
-        self.set_controls_enabled(True); self.enable_btn.setChecked(False); self.worker.send('ME0')
-        self.log.appendPlainText('# board ready (DISABLED) — set mode/target, then Enable')
+        self.set_controls_enabled(True)
+        # A lifecycle run owns its own re-home on reconnect (LifecycleController._on_ready);
+        # don't fight it. Otherwise, optionally auto-home on every connect.
+        if self.lc and self.lc.running:
+            return
+        if self.autohome_chk.isChecked():
+            # Homing needs the motor + both endstops enabled. The board re-inits to
+            # endstops-enabled on reset, but sync explicitly in case they were toggled off.
+            self.worker.send('EAE1'); self.worker.send('EBE1')
+            self.enable_btn.setChecked(True)        # -> on_enable sends ME1
+            self.worker.send('EH')
+            self.log.appendPlainText('# auto-home on connect: MIN → MAX → center…')
+        else:
+            self.enable_btn.setChecked(False); self.worker.send('ME0')
+            self.log.appendPlainText('# board ready (DISABLED) — set mode/target, then Enable')
 
     def on_line(self, s): self.log.appendPlainText(s)
 
