@@ -673,11 +673,11 @@ class LifecycleWindow(QtWidgets.QWidget):
         self.p_e.setLabel('bottom', 'cycle'); self.p_e.setLabel('left', '∫τ·dθ', 'J(rel)'); self.p_e.addLegend()
         self.c_ef = self.p_e.plot(pen=pg.mkPen('g', width=2), name='forward')
         self.c_eb = self.p_e.plot(pen=pg.mkPen('y', width=2), name='back')
-        self.p_s = pg.PlotWidget(title='Slip: MIN→MAX span & per-end drift vs cycle'); self.p_s.showGrid(x=True, y=True, alpha=0.3)
-        self.p_s.setLabel('bottom', 'cycle'); self.p_s.setLabel('left', 'rad'); self.p_s.addLegend()
-        self.c_span = self.p_s.plot(pen=pg.mkPen('c', width=2), name='span')
-        self.c_min = self.p_s.plot(pen=pg.mkPen('m', width=1), name='min-end')
-        self.c_max = self.p_s.plot(pen=pg.mkPen('r', width=1), name='max-end')
+        self.p_s = pg.PlotWidget(title='Slip drift vs cycle (Δ from baseline)'); self.p_s.showGrid(x=True, y=True, alpha=0.3)
+        self.p_s.setLabel('bottom', 'cycle'); self.p_s.setLabel('left', 'Δ from cycle 0', 'rad'); self.p_s.addLegend()
+        self.c_span = self.p_s.plot(pen=pg.mkPen('c', width=2), name='span Δ')
+        self.c_min = self.p_s.plot(pen=pg.mkPen('m', width=1), name='min-end drift')
+        self.c_max = self.p_s.plot(pen=pg.mkPen('r', width=1), name='max-end drift')
         self.p_h = pg.PlotWidget(title='Torque-vs-position heatmap (rows=cycles, x=position)')
         self.p_h.setLabel('bottom', 'position bin'); self.p_h.setLabel('left', 'cycle')
         self.img = pg.ImageItem(); self.p_h.addItem(self.img)
@@ -701,11 +701,13 @@ class LifecycleWindow(QtWidgets.QWidget):
         self.span.append(span)
         self.mn.append(st.get('min_angle')); self.mx.append(st.get('max_angle'))
         self.c_ef.setData(self.cyc, self.ef); self.c_eb.setData(self.cyc, self.eb)
-        self.c_span.setData(self.cyc, self.span)
+        # Plot all three as deviation from their cycle-0 baseline: span ~200 rad and the
+        # absolute min/max-end angles dwarf the few-rad drift we actually want to see.
+        self.c_span.setData(self.cyc, [s - self.span[0] for s in self.span])
         if all(x is not None for x in self.mn):
-            self.c_min.setData(self.cyc, self.mn)
+            self.c_min.setData(self.cyc, [x - self.mn[0] for x in self.mn])
         if all(x is not None for x in self.mx):
-            self.c_max.setData(self.cyc, self.mx)
+            self.c_max.setData(self.cyc, [x - self.mx[0] for x in self.mx])
 
     def add_profile(self, cycle, row):
         self._rows.append([np.nan if (x is None) else x for x in row]); self._row_c.append(cycle)
