@@ -1,5 +1,5 @@
 [workspace]
-name = "mks-foc"
+name = "lifetime-foc-rig"
 version = "0.1.0"
 description = "MKS ESP32 FOC V2.0 — firmware (PlatformIO) + PyQt control panel + rolling-drive lifecycle test"
 channels = ["conda-forge"]

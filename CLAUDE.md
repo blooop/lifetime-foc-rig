@@ -1,4 +1,4 @@
-# CLAUDE.md — MKS ESP32 FOC workspace
+# CLAUDE.md — lifetime-foc-rig (MKS ESP32 FOC workspace)
 
 Tooling + a custom GUI for driving an **MKS ESP32 FOC V2.0** board with the
 SimpleFOC library. This is a working setup; the notes below are the load-bearing
