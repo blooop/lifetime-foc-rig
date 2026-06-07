@@ -38,6 +38,16 @@ def test_eps_at_or_above_amplitude_uses_floor_no_crash():
     assert math.isfinite(r['Ku']) and r['Ku'] > 0
 
 
+def test_zero_period_guards_division():
+    # collapsed/repeated up-crossings -> Tu == 0; the `I = P/(2.2*Tu) if Tu>0`
+    # guard must fall back to I == 0 (not divide by zero) and stay finite.
+    r = ziegler_nichols([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vmin=-2, vmax=2, d=0.4, eps=0.2, warmup=2)
+    assert r is not None
+    assert r['Tu'] == 0.0
+    assert r['I'] == 0.0
+    assert math.isfinite(r['P']) and math.isfinite(r['Ku'])
+
+
 def test_pi_only_no_derivative_term_implied():
     # ZN PI: P = 0.45 Ku, I = P / (2.2 Tu) — assert the canonical ratios hold
     r = ziegler_nichols([0, 0.5, 1.0, 1.5, 2.0, 2.5], vmin=-2, vmax=2, d=0.3, eps=0.2, warmup=1)
