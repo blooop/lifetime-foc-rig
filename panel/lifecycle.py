@@ -25,6 +25,16 @@ from PyQt5 import QtCore
 RUNS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lifecycle_runs')
 
 
+def kt_from_kv(kv, override=0.0):
+    """Torque constant Kt = Ke [N·m/A]: explicit override if > 0, else 9.549/KV."""
+    return override if override > 0 else 9.549 / max(kv, 1.0)
+
+
+def model_iq(vq, velocity, kt, r):
+    """Vq-model phase current: Iq = (Vq − Ke·ω) / R, with R floored to avoid /0."""
+    return (vq - kt * velocity) / max(r, 1e-3)
+
+
 @dataclass
 class LifecycleConfig:
     v_measure: float = 3.0            # rad/s, constant sweep/cycle speed
@@ -167,7 +177,7 @@ class LifecycleController(QtCore.QObject):
         if not self.running or self.phase != 'run':
             return
         kt = self._kt()
-        iq_model = (vq - kt * v) / self._r()
+        iq_model = model_iq(vq, v, kt, self._r())
         # Sustained-breach abort: the model Iq spikes briefly on every accel/reversal
         # (high Vq while ω lags) — that's normal, not a fault. Only abort if it stays
         # over the threshold for IQ_DWELL_S continuously (a real jam/seizure persists).
@@ -187,7 +197,7 @@ class LifecycleController(QtCore.QObject):
     def _kt(self):
         if self.kt_provider is not None:
             return self.kt_provider()
-        return self.cfg.kt_override if self.cfg.kt_override > 0 else 9.549 / max(self.cfg.kv, 1.0)
+        return kt_from_kv(self.cfg.kv, self.cfg.kt_override)
 
     def _r(self):
         r = self.r_provider() if self.r_provider is not None else self.cfg.phase_resistance

@@ -9,7 +9,7 @@ from serial.tools import list_ports
 import numpy as np
 from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
-from lifecycle import LifecycleController, LifecycleConfig
+from lifecycle import LifecycleController, LifecycleConfig, kt_from_kv, model_iq
 
 BAUD = 115200
 
@@ -33,6 +33,68 @@ def find_serial_port():
     if ports:
         return ports[0].device
     return '/dev/ttyUSB0'                  # last-resort fallback
+
+
+def parse_line(s):
+    """Classify one stripped serial line from the firmware into a (kind, payload).
+
+      ('endstop', (minTrig, maxTrig, homed, homingPhase, pos, backstop))
+      ('slip',    (which, shaft_angle))
+      ('telem',   (target, Vq, Iq_amps, velocity, angle))   # Iq converted mA -> A
+      ('line',    s)                                         # plain log / malformed
+
+    Pure (no I/O) so it can be unit-tested without the board. Malformed structured
+    lines fall back to ('line', s), matching the reader's lenient behavior. The
+    backstop field (index 6) is optional — firmware < v3 omits it (-> 0)."""
+    if s.startswith('E\t'):    # endstop/position telemetry
+        p = s.split('\t')
+        if len(p) >= 6:
+            try:
+                bs = int(p[6]) if len(p) >= 7 else 0
+                return ('endstop', (int(p[1]), int(p[2]), int(p[3]), int(p[4]), float(p[5]), bs))
+            except ValueError:
+                pass
+        return ('line', s)
+    if s.startswith('S\t'):    # slip: shaft_angle latched at a hall edge
+        p = s.split('\t')
+        if len(p) >= 3:
+            try:
+                return ('slip', (int(p[1]), float(p[2])))
+            except ValueError:
+                pass
+        return ('line', s)
+    parts = s.split('\t')
+    if len(parts) >= 7:        # 7-var motor monitor
+        try:
+            v = [float(x) for x in parts]
+        except ValueError:
+            return ('line', s)
+        # v[3] is the monitor's Iq field in MILLIAMPS (firmware prints c.q*1000);
+        # convert to amps so it matches its label and the lifecycle [A] thresholds.
+        return ('telem', (v[0], v[1], v[3] / 1000.0, v[5], v[6]))
+    return ('line', s)
+
+
+def ziegler_nichols(ups, vmin, vmax, d, eps, warmup):
+    """Relay-feedback (Åström–Hägglund) → Ziegler–Nichols PI gains.
+
+    `ups` are the bias up-crossing timestamps; `vmin`/`vmax` the steady-state
+    velocity extremes; `d` the relay amplitude [V]; `eps` the relay hysteresis;
+    `warmup` the number of leading periods to discard. Returns a dict with
+    Ku, Tu, a, P, I, cycles — or None if there aren't enough clean oscillations.
+    Pure (no I/O) so the tuning math is unit-testable without the board."""
+    if len(ups) < warmup + 2:
+        return None
+    periods = [ups[i + 1] - ups[i] for i in range(len(ups) - 1)]
+    steady = periods[warmup:] or periods
+    Tu = sum(steady) / len(steady)
+    a = (vmax - vmin) / 2.0
+    denom = math.sqrt(max(a * a - eps * eps, 1e-6))
+    Ku = 4.0 * d / (math.pi * denom)
+    P = 0.45 * Ku
+    I = P / (2.2 * Tu) if Tu > 0 else 0.0
+    return dict(Ku=Ku, Tu=Tu, a=a, P=P, I=I, cycles=len(steady))
+
 
 MODES = {
     'Torque (V)': (['MC0', 'MT0'], -2.0, 2.0, 'V'),
@@ -125,36 +187,15 @@ class SerialWorker(QtCore.QThread):
             s = raw.decode(errors='replace').strip()
             if not s:
                 continue
-            if s.startswith('E\t'):   # endstop/position telemetry (distinct from the motor monitor)
-                p = s.split('\t')
-                if len(p) >= 6:
-                    try:
-                        bs = int(p[6]) if len(p) >= 7 else 0   # backstop-fired (firmware >=v3)
-                        self.endstop.emit(int(p[1]), int(p[2]), int(p[3]), int(p[4]), float(p[5]), bs)
-                        continue
-                    except ValueError:
-                        pass
-                self.line.emit(s); continue
-            if s.startswith('S\t'):   # slip telemetry: shaft_angle latched at a hall edge
-                p = s.split('\t')
-                if len(p) >= 3:
-                    try:
-                        self.slip.emit(int(p[1]), float(p[2]))
-                        continue
-                    except ValueError:
-                        pass
-                self.line.emit(s); continue
-            parts = s.split('\t')
-            if len(parts) >= 7:
-                try:
-                    v = [float(p) for p in parts]
-                except ValueError:
-                    self.line.emit(s); continue
-                # v[3] is the monitor's Iq field in MILLIAMPS (firmware prints c.q*1000);
-                # convert to amps so "Iq (meas)" matches its label and the lifecycle [A] thresholds.
-                self.telem.emit(v[0], v[1], v[3] / 1000.0, v[5], v[6])   # target, Vq, Iq(meas)[A], velocity, angle
+            kind, payload = parse_line(s)
+            if kind == 'endstop':
+                self.endstop.emit(*payload); continue
+            if kind == 'slip':
+                self.slip.emit(*payload); continue
+            if kind == 'telem':
+                self.telem.emit(*payload)   # target, Vq, Iq(meas)[A], velocity, angle
                 if self.tuning:
-                    self._tune_step(time.monotonic(), v[5])
+                    self._tune_step(time.monotonic(), payload[3])   # payload[3] = velocity
                 continue
             self.line.emit(s)
             if 'Motor ready' in s:
@@ -203,18 +244,10 @@ class SerialWorker(QtCore.QThread):
         T = self.T
         self._w('M0'); self._w('MMD100')
         res = {'success': False, 'reason': reason}
-        ups = T['ups']
-        if ok and len(ups) >= T['warmup'] + 2:
-            periods = [ups[i + 1] - ups[i] for i in range(len(ups) - 1)]
-            steady = periods[T['warmup']:] or periods
-            Tu = sum(steady) / len(steady)
-            a = (T['vmax'] - T['vmin']) / 2.0
-            denom = math.sqrt(max(a * a - T['eps'] * T['eps'], 1e-6))
-            Ku = 4.0 * T['d'] / (math.pi * denom)
-            P = 0.45 * Ku
-            I = P / (2.2 * Tu) if Tu > 0 else 0.0
-            self._w(f"MVP{P:.4f}"); self._w(f"MVI{I:.4f}"); self._w("MVD0")
-            res = dict(success=True, Ku=Ku, Tu=Tu, a=a, P=P, I=I, cycles=len(steady))
+        zn = ziegler_nichols(T['ups'], T['vmin'], T['vmax'], T['d'], T['eps'], T['warmup']) if ok else None
+        if zn is not None:
+            self._w(f"MVP{zn['P']:.4f}"); self._w(f"MVI{zn['I']:.4f}"); self._w("MVD0")
+            res = dict(success=True, **zn)
         # back to a safe state
         self._w('M0'); self._w('MC1'); self._w('ME0')
         self.tuning = False
@@ -554,7 +587,7 @@ class Panel(QtWidgets.QWidget):
 
     def kt(self):
         """Torque constant [N·m/A]: explicit override if set, else 9.549/KV nameplate."""
-        return self.kt_override.value() if self.kt_override.value() > 0 else 9.549 / max(self.kv.value(), 1.0)
+        return kt_from_kv(self.kv.value(), self.kt_override.value())
 
     def set_controls_enabled(self, on):
         for w in (self.slider, self.spin, self.enable_btn, self.stop_btn, self.at_btn, self.home_btn):
@@ -647,7 +680,7 @@ class Panel(QtWidgets.QWidget):
         # Model torque estimate (Vq path): Kt=Ke=9.549/KV; Iq=(Vq−Ke·ω)/R; τ=Kt·Iq.
         # iq_meas (current sense, index 3) is ignored for now — ADC reading not usable.
         kt = self.kt()
-        iq = (vq - kt * v) / max(self.res.value(), 1e-3)
+        iq = model_iq(vq, v, kt, self.res.value())
         tau = kt * iq
         self.t_lbl.setText(f"{t:.3f}"); self.v_lbl.setText(f"{v:.3f}"); self.a_lbl.setText(f"{a:.3f}")
         self.i_lbl.setText(f"{iq:+.2f}"); self.q_lbl.setText(f"{tau*1000:+.1f}")
