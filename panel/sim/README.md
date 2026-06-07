@@ -34,12 +34,19 @@ and applies a torque each control tick.
 From `panel/` (Genesis runs in the isolated `sim` pixi env):
 
 ```
-pixi run -e sim gui-sim                       # GUI vs the Genesis plant
-pixi run -e sim gui-sim --viewer              # + live Genesis carriage view
+pixi run -e sim gui-sim                       # control panel (live plots) vs the Genesis plant
+pixi run -e sim viewer                        # 2D carriage view: watch it home + cycle (real-time)
 pixi run -e sim gui-sim --scenario wear       # GUI with a wear fault injected
 pixi run -e sim lifecycle-sim --cycles 30 --vmeas 20 --speed 2
 python run_sim.py --plant analytic --lifecycle --cycles 50 --speed 10   # no Genesis, fast
 ```
+
+**Watching it move:** `pixi run -e sim viewer` opens a 2D top-down view
+(`viewer2d.py`) — a rail with the carriage sliding between green MIN / blue MAX
+hall markers and red hard-stop lines, driven by the firmware telemetry in real
+time. This is the reliable "see it run" path (no camera, no spin, no GL). A
+`viewer3d` task (`viewer_demo.py`) renders the Genesis 3D scene but has camera-
+spin / 60-FPS-throttle quirks — prefer the 2D `viewer`.
 
 `run_lifecycle.py --sim [--plant analytic|genesis] [--speed N] [--scenario NAME]`
 also works for the headless runner. Plain `pixi run test` covers the firmware port

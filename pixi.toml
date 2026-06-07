@@ -45,7 +45,8 @@ sim = { features = ["sim"], no-default-feature = true }
 sim-smoke = { cmd = "python sim/smoke_test.py", cwd = "panel", description = "Phase-0 Genesis CPU gate (import/init/step a 1-DOF rotor)" }
 sim-test = { cmd = "python sim/throughput_probe.py", cwd = "panel", description = "Measure Genesis CPU step throughput / real-time factor" }
 gui-sim = { cmd = "python run_sim.py", cwd = "panel", description = "Control panel (live plots) against the Genesis physics sim — no 3D window" }
-viewer = { cmd = "python -u run_sim.py --viewer", cwd = "panel", description = "Standalone 3D Genesis viewer — watch the carriage home + cycle (960x720 window)" }
+viewer = { cmd = "python -u run_sim.py --viewer --plant analytic", cwd = "panel", description = "2D carriage view — watch the shuttle home + cycle between the endstops (real-time)" }
+viewer3d = { cmd = "python -u run_sim.py --viewer3d", cwd = "panel", description = "Experimental Genesis 3D viewer (camera/perf quirks; prefer `viewer`)" }
 lifecycle-sim = { cmd = "python run_sim.py --lifecycle", cwd = "panel", description = "Headless lifecycle vs the sim, e.g. pixi run -e sim lifecycle-sim --cycles 30 --vmeas 20 --speed 4" }
 
 [tasks]

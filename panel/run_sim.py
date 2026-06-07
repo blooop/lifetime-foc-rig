@@ -28,17 +28,24 @@ def main():
     ap.add_argument("--speed", type=float, default=1.0, help="sim speed (>1 = faster than real-time)")
     ap.add_argument("--hz", type=float, default=1000.0, help="control/physics rate [Hz]")
     ap.add_argument("--viewer", action="store_true",
-                    help="standalone 3D Genesis viewer (carriage homes + cycles); main-thread, no GUI")
+                    help="2D top-down carriage view (pyqtgraph): watch it home + cycle in real time")
+    ap.add_argument("--viewer3d", action="store_true",
+                    help="experimental Genesis 3D viewer (camera/perf quirks; prefer --viewer)")
     ap.add_argument("--scenario", default="clean", help="fault scenario (see sim/scenarios.py)")
     # lifecycle / viewer passthrough
     ap.add_argument("--cycles", type=int, default=30)
-    ap.add_argument("--vmeas", type=float, default=20.0)
+    ap.add_argument("--vmeas", type=float, default=60.0)
     args, extra = ap.parse_known_args()
 
-    # 3D viewer: standalone main-thread render loop (no Qt, no SimSerial thread).
+    # 2D carriage view: reliable, real-time, on-screen. Defaults to the analytic
+    # plant (instant — no Genesis JIT; the 2D view only needs telemetry).
     if args.viewer:
-        from sim.viewer_demo import main as viewer_main
-        viewer_main(v_cycle=args.vmeas, hz=args.hz)
+        from sim.viewer2d import main as viewer2d_main
+        viewer2d_main(v_cycle=args.vmeas, plant=args.plant, speed=args.speed)
+        return
+    if args.viewer3d:   # standalone main-thread Genesis render loop (no Qt)
+        from sim.viewer_demo import main as viewer3d_main
+        viewer3d_main(v_cycle=args.vmeas, hz=args.hz)
         return
 
     os.environ["FOC_SIM"] = "1"
