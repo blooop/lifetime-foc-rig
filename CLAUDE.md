@@ -38,8 +38,25 @@ pixi run monitor     # serial monitor @115200 (close the panel first)
 pixi run gui         # launch the GUI (12 V on so the board calibrates)
 pixi run lifecycle --cycles 5000 --vmeas 3.0   # headless endurance run
 pixi run plot        # view a finished run (newest, or `pixi run plot <run_dir>`)
+pixi run test        # hardware-free Python tests (panel/tests), incl. the sim
+# --- physics simulation, NO hardware (Genesis plant behind the serial seam) ---
+pixi run -e sim gui-sim                     # GUI vs the Genesis physics sim
+pixi run -e sim lifecycle-sim --cycles 30 --vmeas 20 --speed 2   # headless sim run
 ```
 Only one program can own the serial port at a time — close the GUI before `monitor`/`lifecycle`.
+
+## Simulation (no hardware) — `panel/sim/` (see `panel/sim/README.md`, `GENESIS_SIM_PLAN.md`)
+Runs the **whole real stack** (GUI/lifecycle/analysis, unchanged) against a physics sim
+instead of the board. The seam is one line in `SerialWorker.run` (`foc_panel.py`): with
+`FOC_SIM=1` it opens a **`SimSerial`** instead of `serial.Serial()`. Behind it: **`SoftFirmware`**
+(a faithful Python port of `main.cpp` — control/homing/limits/backstop/watchdog/glitch +
+the `Vq→Iq→τ` model) drives a **`Plant`** — `GenesisPlant` (real physics, isolated `sim`
+pixi env: `no-default-feature`, CPU torch, libc floor for pymeshlab) or `AnalyticPlant`
+(pure-Python, used by `pixi run test`). Defaults match the hardware oracle (travel ≈200,
+`v_safe` ≈109, |Vq| ≈1.7 V). Fault scenarios (`sim/scenarios.py`: wear, hall_slip,
+missed_hall, stall, glitch) validate the lifecycle aborts. Real-time by default; `--speed N`
+accelerates (watchdog scales with it). **Do NOT regress the Genesis gotchas** documented in
+`panel/sim/README.md` (MJCF degrees-vs-radians, scene substeps→inertia, force-control DOF).
 
 ## Current firmware (`firmware/src/main.cpp`) — safe, voltage-based
 - Modes: **velocity** (default), **angle**, **torque-voltage**. Voltage-based control only.

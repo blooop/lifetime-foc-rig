@@ -13,7 +13,7 @@ The serial port is auto-detected (CH340 by USB VID); override with --port or the
 env var. Only one program may own the port — close the GUI panel first. 12 V must be on so
 the board can calibrate. Ctrl-C stops cleanly (disables the motor, finalizes logs).
 """
-import sys, argparse, signal
+import sys, os, argparse, signal
 from PyQt5 import QtCore
 from foc_panel import SerialWorker
 from lifecycle import LifecycleController, LifecycleConfig
@@ -31,7 +31,18 @@ def main():
     ap.add_argument('--bins', type=int, default=100)
     ap.add_argument('--resume', default='', help='run dir to resume the cycle count from')
     ap.add_argument('--port', default=None, help='serial port (default: auto-detect / $FOC_PORT)')
+    # --- physics simulation (no hardware) ---
+    ap.add_argument('--sim', action='store_true', help='run against the physics sim (Genesis plant)')
+    ap.add_argument('--plant', default='genesis', choices=['genesis', 'analytic'])
+    ap.add_argument('--speed', type=float, default=1.0, help='sim speed factor (>1 = faster than real-time)')
+    ap.add_argument('--scenario', default='clean', help='fault scenario (see sim/scenarios.py)')
     args = ap.parse_args()
+
+    if args.sim:
+        os.environ['FOC_SIM'] = '1'
+        from sim.sim_serial import configure
+        from sim.scenarios import make_scenario
+        configure(plant=args.plant, speed=args.speed, on_step=make_scenario(args.scenario))
 
     app = QtCore.QCoreApplication(sys.argv)
     cfg = LifecycleConfig(v_measure=args.vmeas, target_cycles=args.cycles,

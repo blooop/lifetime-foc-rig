@@ -12,6 +12,40 @@ pyqt = "5.*"          # PyQt5 — the panel/lifecycle GUI
 pyqtgraph = "*"
 pyserial = "*"
 numpy = "*"
+pytest = "*"          # hardware-free test suite (panel/tests)
+
+# --- Physics-based simulation (Genesis as the plant) — isolated heavy deps. ---
+# Own feature/environment (no-default-feature) so it doesn't inherit the conda
+# numpy pin (which conflicts with Genesis's pypi deps) and the default install
+# stays lean (no torch/taichi). libc floor raised so uv accepts the
+# manylinux_2_35 pymeshlab wheels (system glibc is 2.39).
+[feature.sim.system-requirements]
+libc = "2.35"
+
+[feature.sim.dependencies]
+python = "3.12.*"
+# the GUI runs in-process with the sim, so the sim env also needs the panel deps.
+pyqt = "5.*"
+pyqtgraph = "*"
+pyserial = "*"
+numpy = "*"
+
+[feature.sim.pypi-dependencies]
+genesis-world = "*"
+# torch is a peer dep of genesis (not auto-installed). Pull the CPU-only wheel
+# (the default PyPI torch drags in CUDA; this box's Maxwell GPU is unsupported).
+torch = { version = "*", index = "https://download.pytorch.org/whl/cpu" }
+
+[environments]
+sim = { features = ["sim"], no-default-feature = true }
+
+# --- physics simulation tasks (no hardware): Genesis plant behind the serial seam.
+# Run in the sim env, e.g. `pixi run -e sim gui-sim`. ---
+[feature.sim.tasks]
+sim-smoke = { cmd = "python sim/smoke_test.py", cwd = "panel", description = "Phase-0 Genesis CPU gate (import/init/step a 1-DOF rotor)" }
+sim-test = { cmd = "python sim/throughput_probe.py", cwd = "panel", description = "Measure Genesis CPU step throughput / real-time factor" }
+gui-sim = { cmd = "python run_sim.py", cwd = "panel", description = "Launch the GUI panel against the Genesis physics sim (no hardware)" }
+lifecycle-sim = { cmd = "python run_sim.py --lifecycle", cwd = "panel", description = "Headless lifecycle vs the sim, e.g. pixi run -e sim lifecycle-sim --cycles 30 --vmeas 20 --speed 4" }
 
 [tasks]
 # Ports are auto-detected (PlatformIO for flash/monitor; the panel detects the CH340
@@ -24,3 +58,4 @@ monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description 
 gui = { cmd = "python foc_panel.py", cwd = "panel", description = "Launch the PyQt control panel (12 V must be on so the board calibrates)" }
 lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Headless lifecycle endurance runner — args pass through, e.g. pixi run lifecycle --cycles 1000 --vmeas 8" }
 plot = { cmd = "python plot_lifecycle.py", cwd = "panel", description = "View a finished lifecycle run (newest by default; or `pixi run plot <run_dir>`)" }
+test = { cmd = "pytest", cwd = "panel", description = "Hardware-free Python test suite (panel/tests)", env = { QT_QPA_PLATFORM = "offscreen" } }

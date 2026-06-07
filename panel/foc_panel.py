@@ -89,7 +89,11 @@ class SerialWorker(QtCore.QThread):
         while self._run:
             port = self.port_override or find_serial_port()
             try:
-                self.ser = serial.Serial()
+                if os.environ.get('FOC_SIM'):
+                    from sim.sim_serial import SimSerial   # physics sim behind the serial seam
+                    self.ser = SimSerial()
+                else:
+                    self.ser = serial.Serial()
                 self.ser.port, self.ser.baudrate, self.ser.timeout = port, BAUD, 0.05
                 self.ser.dtr = False; self.ser.rts = False
                 self.ser.open()
