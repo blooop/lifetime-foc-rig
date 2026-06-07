@@ -7,11 +7,14 @@ platforms = ["linux-64", "osx-arm64", "osx-64"]
 
 [dependencies]
 python = "3.12.*"
+pip = "*"             # PlatformIO bootstraps esptool via pip when building for ESP32
 platformio = "*"      # firmware build/flash (pinned Python avoids the 3.14 breakage)
 pyqt = "5.*"          # PyQt5 — the panel/lifecycle GUI
 pyqtgraph = "*"
 pyserial = "*"
 numpy = "*"
+pytest = "*"          # hardware-free test suite (panel/tests) — run with `pixi run test`
+pytest-qt = "*"       # offscreen-Qt helpers for the controller/state-machine tests
 
 [tasks]
 # Ports are auto-detected (PlatformIO for flash/monitor; the panel detects the CH340
@@ -24,3 +27,7 @@ monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description 
 gui = { cmd = "python foc_panel.py", cwd = "panel", description = "Launch the PyQt control panel (12 V must be on so the board calibrates)" }
 lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Headless lifecycle endurance runner — args pass through, e.g. pixi run lifecycle --cycles 1000 --vmeas 8" }
 plot = { cmd = "python plot_lifecycle.py", cwd = "panel", description = "View a finished lifecycle run (newest by default; or `pixi run plot <run_dir>`)" }
+# --- tests (no hardware required) ---
+# QT_QPA_PLATFORM=offscreen lets the PyQt-coupled tests run headless (no display / no board).
+test = { cmd = "pytest", cwd = "panel", description = "Run the hardware-free Python test suite (panel/tests)", env = { QT_QPA_PLATFORM = "offscreen" } }
+test-fw = { cmd = "pio test -e native", cwd = "firmware", description = "Run the native (host) firmware unit tests for the safety logic" }

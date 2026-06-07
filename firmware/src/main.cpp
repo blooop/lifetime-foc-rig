@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <SimpleFOC.h>
+#include "control_logic.h"   // pure safety/motion math (host-unit-tested; see firmware/test)
 
 // Glitch filter armed only AFTER initFOC (won't break alignment); rejects the bad
 // values that come with occasional I2C hiccups so commutation doesn't lose lock.
@@ -27,9 +28,7 @@ public:
     if (!have_last) { last = a; t_last = now; have_last = true; return a; }
     if (!armed)     { last = a; t_last = now; return a; }
     float dt = (uint32_t)(now - t_last) * 1e-6f;          // s (unsigned wrap-safe)
-    float d  = a - last;
-    if (d >  _PI) d -= _2PI; else if (d < -_PI) d += _2PI;
-    if (fabsf(d) > max_speed * dt + floor_step) {         // impossible -> drop, keep
+    if (glitchIsBad(last, a, dt, max_speed, floor_step)) {// impossible -> drop, keep
       glitches++; return last;                            // last/t_last so it self-heals
     }
     last = a; t_last = now; return a;
@@ -173,49 +172,22 @@ float positionFromHome() { return motor.shaft_angle - g_home_offset; }
 // MAX. We derive the intended motion direction the same way for every mode so the
 // limiting always matches the physical wiring (not a fixed +/- assumption).
 void enforceTravelLimits() {
-  bool minT = esMin.triggered, maxT = esMax.triggered;
-  bool angleMode = (motor.controller == MotionControlType::angle);
-  // intended motion: velocity sign for vel/torque; for angle, sign of (target - pos)
-  float d = angleMode ? (motor.target - motor.shaft_angle) : motor.target;
-
-  // Hard endstops (always active, even un-homed).
-  bool intoMin = (g_home_dir * d > 0.0f);   // heading toward MIN
-  bool intoMax = (g_home_dir * d < 0.0f);   // heading toward MAX
-  if ((minT && intoMin) || (maxT && intoMax)) {
-    motor.target = angleMode ? motor.shaft_angle : 0.0f;   // hold / stop
-  }
-
-  // 5% overtravel backstop: a missed hall let the carriage run past where the
-  // endstop should be -> kill the driver before the physical stop. Only while
-  // heading FURTHER past; backing away is allowed (so re-enable won't re-trip).
-  if (g_backstop_armed) {
-    bool pastMin = (g_home_dir * (motor.shaft_angle - g_angle_min) >  g_backstop_margin) && intoMin;
-    bool pastMax = (g_home_dir * (motor.shaft_angle - g_angle_max) < -g_backstop_margin) && intoMax;
-    if (pastMin || pastMax) {
-      g_backstop_fired = pastMin ? 1 : 2;
-      motor.disable();
-      motor.target = angleMode ? motor.shaft_angle : 0.0f;
-      Serial.printf("!! OVERTRAVEL BACKSTOP past %s -> motor DISABLED (re-enable + re-home)\n",
-                    pastMin ? "MIN" : "MAX");
-    }
-    // Cap velocity-mode speed so a reverse-on-trigger stop stays inside the 5% margin.
-    if (!angleMode) {
-      if (motor.target >  g_v_safe) motor.target =  g_v_safe;
-      if (motor.target < -g_v_safe) motor.target = -g_v_safe;
-    }
-  }
-
-  // Soft limits (position-based; +velocity always increases position). Homed backstop.
-  if (g_homed && g_soft_enabled) {
-    if (angleMode) {
-      float lo = g_home_offset + g_soft_min, hi = g_home_offset + g_soft_max;
-      if (motor.target < lo) motor.target = lo;
-      if (motor.target > hi) motor.target = hi;
-    } else {
-      float pos = positionFromHome();
-      if (pos <= g_soft_min && motor.target < 0) motor.target = 0;
-      if (pos >= g_soft_max && motor.target > 0) motor.target = 0;
-    }
+  // Build the inputs from live globals/motor state and let the pure decision
+  // function (control_logic.h, host-unit-tested) do the clamping/backstop math.
+  LimitInputs in{
+    (motor.controller == MotionControlType::angle),
+    motor.target, motor.shaft_angle,
+    esMin.triggered, esMax.triggered, g_home_dir,
+    g_backstop_armed, g_angle_min, g_angle_max, g_backstop_margin, g_v_safe,
+    g_homed, g_soft_enabled, g_home_offset, g_soft_min, g_soft_max,
+  };
+  LimitOutput out = computeTravelLimits(in);
+  motor.target = out.target;
+  if (out.disable) {                         // overtravel backstop tripped
+    g_backstop_fired = out.backstop_fired;
+    motor.disable();
+    Serial.printf("!! OVERTRAVEL BACKSTOP past %s -> motor DISABLED (re-enable + re-home)\n",
+                  out.backstop_fired == 1 ? "MIN" : "MAX");
   }
 }
 
@@ -235,7 +207,7 @@ float g_last_written = 0.0f;      // last value we wrote to motor.target
 bool  g_prof_init  = false;
 MotionControlType g_prof_mode = MotionControlType::velocity;
 
-static inline float clampf(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
+// clampf() now lives in control_logic.h (shared with the host unit tests).
 
 void applyMotionProfile(float dt) {
   if (!g_profile_enabled || dt <= 0.0f) { g_prof_init = false; return; }  // pass-through
@@ -255,20 +227,12 @@ void applyMotionProfile(float dt) {
 
   float out;
   if (motor.controller == MotionControlType::angle) {
-    float vmax  = motor.velocity_limit;
-    float toGo  = g_cmd_target - g_prof_pos;
-    float decel = (g_prof_vel * g_prof_vel) / (2.0f * g_max_accel);  // braking distance
-    float desired = (fabsf(toGo) <= decel) ? 0.0f : (toGo > 0 ? vmax : -vmax);
-    float maxdv = g_max_accel * dt;
-    g_prof_vel += clampf(desired - g_prof_vel, -maxdv, maxdv);
-    g_prof_pos += g_prof_vel * dt;
-    if (fabsf(g_cmd_target - g_prof_pos) < 1e-3f && fabsf(g_prof_vel) < maxdv) {
-      g_prof_pos = g_cmd_target; g_prof_vel = 0.0f;     // settle exactly on target
-    }
+    ProfileState s = profileAngleStep({g_prof_vel, g_prof_pos}, g_cmd_target,
+                                      motor.velocity_limit, g_max_accel, dt);
+    g_prof_vel = s.vel; g_prof_pos = s.pos;
     out = g_prof_pos;
   } else if (motor.controller == MotionControlType::velocity) {
-    float maxdv = g_max_accel * dt;
-    g_prof_vel += clampf(g_cmd_target - g_prof_vel, -maxdv, maxdv);
+    g_prof_vel = profileVelStep(g_prof_vel, g_cmd_target, g_max_accel, dt);
     out = g_prof_vel;
   } else {
     out = g_cmd_target;            // torque-voltage etc.: pass through unshaped
@@ -344,8 +308,8 @@ void homingStep() {
         // home), and derive the safe cycle speed so a reverse-on-trigger stop stays
         // well inside that 5% margin. EZ does NOT reach here -> stays disarmed.
         float travel  = fabsf(g_angle_max - g_angle_min);
-        g_backstop_margin = OVERTRAVEL_FRAC * travel;
-        g_v_safe          = sqrtf(2.0f * g_max_accel * OVERTRAVEL_SAFE * OVERTRAVEL_FRAC * travel);
+        g_backstop_margin = backstopMargin(OVERTRAVEL_FRAC, travel);
+        g_v_safe          = vSafeFromMargin(g_max_accel, OVERTRAVEL_SAFE, OVERTRAVEL_FRAC, travel);
         g_backstop_fired  = 0;
         g_backstop_armed  = true;
         motor.controller = MotionControlType::angle;    // drive back to center
