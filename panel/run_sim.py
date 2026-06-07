@@ -6,11 +6,15 @@ SerialWorker opens a SimSerial instead of a real port, configures the plant, and
 starts either the GUI panel or a headless lifecycle run.
 
 Examples (from panel/, e.g. `pixi run -e sim gui-sim`):
-  python run_sim.py                              # GUI against the Genesis plant
-  python run_sim.py --viewer                     # + live Genesis carriage view
+  python run_sim.py                              # GUI control panel against the Genesis plant
+  python run_sim.py --viewer                     # standalone 3D Genesis carriage view (no GUI)
   python run_sim.py --scenario wear              # GUI with a wear fault injected
   python run_sim.py --lifecycle --cycles 30 --vmeas 20 --speed 4
   python run_sim.py --plant analytic --lifecycle --cycles 50   # no-Genesis, fast
+
+NOTE: --viewer is its own mode (the GL viewer needs the main thread, which the
+GUI's Qt loop owns), so it shows the 3D carriage homing+cycling without the panel.
+Use `gui-sim` for the interactive control panel (live plots, no 3D window).
 """
 import argparse
 import os
@@ -23,12 +27,19 @@ def main():
     ap.add_argument("--plant", default="genesis", choices=["genesis", "analytic"])
     ap.add_argument("--speed", type=float, default=1.0, help="sim speed (>1 = faster than real-time)")
     ap.add_argument("--hz", type=float, default=1000.0, help="control/physics rate [Hz]")
-    ap.add_argument("--viewer", action="store_true", help="show the Genesis viewer")
+    ap.add_argument("--viewer", action="store_true",
+                    help="standalone 3D Genesis viewer (carriage homes + cycles); main-thread, no GUI")
     ap.add_argument("--scenario", default="clean", help="fault scenario (see sim/scenarios.py)")
-    # lifecycle passthrough
+    # lifecycle / viewer passthrough
     ap.add_argument("--cycles", type=int, default=30)
     ap.add_argument("--vmeas", type=float, default=20.0)
     args, extra = ap.parse_known_args()
+
+    # 3D viewer: standalone main-thread render loop (no Qt, no SimSerial thread).
+    if args.viewer:
+        from sim.viewer_demo import main as viewer_main
+        viewer_main(v_cycle=args.vmeas, hz=args.hz)
+        return
 
     os.environ["FOC_SIM"] = "1"
     from sim.sim_serial import configure
