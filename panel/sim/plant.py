@@ -181,9 +181,18 @@ class AnalyticPlant(Plant):
 
 
 class GenesisPlant(Plant):
-    """Genesis-backed plant: one revolute DOF (the shaft) with reflected inertia
-    (joint armature), hard stops as joint limits (true contact), and Coulomb +
-    viscous friction applied as torque (so it's runtime-injectable for wear)."""
+    """Genesis-backed plant. Physics is a single **hinge** DOF (the motor shaft,
+    1:1 with the firmware's position): its inertia is set by joint `armature`
+    (== cfg.inertia), which — unlike body mass — Genesis does not floor, so the
+    dynamics match the CLAUDE.md oracle. Hard stops are the joint range; Coulomb+
+    viscous friction is applied as torque (runtime-injectable for wear).
+
+    For the viewer (`show_viewer`), the scene additionally carries a **visual-only
+    linear carriage** on a slide DOF plus a rail and hall/hard-stop markers. The
+    carriage is teleported each step to the shaft position (it is not force-driven,
+    so Genesis's body-mass floor is irrelevant) — so you watch a correct linear
+    shuttle while the physics stays the validated rotary DOF. Headless runs use the
+    rotor-only scene, identical to what was validated against the oracle."""
     _gs_inited = False
 
     def __init__(self, cfg: PlantConfig | None = None, show_viewer: bool = False,
@@ -192,26 +201,63 @@ class GenesisPlant(Plant):
         self.faults = _Faults(self.cfg)
         self._tau = 0.0
         self.timestep = timestep        # must match the control dt (1/control_hz)
+        self._carriage_dof = None
         self._build(show_viewer)
 
-    def _mjcf(self) -> str:
-        # near-massless geom + joint armature => clean DOF inertia == cfg.inertia.
-        # joint range = the physical hard stops -> Genesis enforces contact there.
+    def _mjcf(self, visual: bool) -> str:
         c = self.cfg
+        lo, hi = c.hard_stop_max, c.hard_stop_min   # joint range (e.g. -145 .. +145)
+        # physics shaft: hinge with armature == cfg.inertia (matches the oracle).
+        rotor = f"""
+    <body name="rotor" pos="0 -1e4 0">    <!-- off-screen; physics only -->
+      <joint name="shaft" type="hinge" axis="0 0 1" limited="true"
+             range="{lo} {hi}" armature="{c.inertia}" damping="0" frictionloss="0"/>
+      <geom type="box" size="0.01 0.01 0.01" mass="0.001"
+            rgba="0 0 0 0" contype="0" conaffinity="0"/>
+    </body>"""
+        if not visual:
+            return f"""
+<mujoco model="foc_rig">
+  <compiler angle="radian"/>
+  <option gravity="0 0 0" timestep="{self.timestep}"/>
+  <worldbody>{rotor}
+  </worldbody>
+</mujoco>
+"""
+        # viewer scene: rotor (hidden) + a visual carriage slaved to it + markers.
         return f"""
-<mujoco model="foc_rig_shaft">
-  <compiler angle="radian"/>   <!-- joint range/angles in RADIANS, not degrees -->
+<mujoco model="foc_rig">
+  <compiler angle="radian"/>
   <option gravity="0 0 0" timestep="{self.timestep}"/>
   <worldbody>
-    <body name="rotor" pos="0 0 0">
-      <joint name="shaft" type="hinge" axis="0 0 1" limited="true"
-             range="{c.hard_stop_max} {c.hard_stop_min}"
-             armature="{c.inertia}" damping="0" frictionloss="0"/>
-      <geom type="box" size="0.02 0.005 0.005" mass="0.005"/>
+    <!-- static rail + markers, VISUAL ONLY. +x heads toward MIN. -->
+    <geom name="rail" type="box" pos="0 0 -7" size="{c.travel * 0.85:.2f} 5 1"
+          rgba="0.45 0.45 0.5 1" contype="0" conaffinity="0"/>
+    <geom name="min_hall" type="box" pos="{c.hall_min_pos} 0 0" size="1.5 7 7"
+          rgba="0.15 0.8 0.25 1" contype="0" conaffinity="0"/>
+    <geom name="max_hall" type="box" pos="{c.hall_max_pos} 0 0" size="1.5 7 7"
+          rgba="0.15 0.45 0.95 1" contype="0" conaffinity="0"/>
+    <geom name="hardstop_a" type="box" pos="{hi} 0 0" size="3 10 10"
+          rgba="0.9 0.15 0.1 1" contype="0" conaffinity="0"/>
+    <geom name="hardstop_b" type="box" pos="{lo} 0 0" size="3 10 10"
+          rgba="0.9 0.15 0.1 1" contype="0" conaffinity="0"/>{rotor}
+    <body name="carriage" pos="0 0 0">
+      <joint name="carriage_slide" type="slide" axis="1 0 0" damping="0"/>
+      <geom name="carriage" type="box" size="11 8 8" mass="1.0"
+            rgba="1 0.7 0.1 1" contype="0" conaffinity="0"/>
     </body>
   </worldbody>
 </mujoco>
 """
+
+    def _viewer_options(self, gs):
+        # frame the whole track (x in [-hard, +hard]) from above and to the side
+        span = self.cfg.hard_stop_min
+        return gs.options.ViewerOptions(
+            res=(1280, 720), camera_fov=45,
+            camera_pos=(0.0, -2.2 * span, 0.9 * span),
+            camera_lookat=(0.0, 0.0, 0.0), camera_up=(0.0, 0.0, 1.0),
+        )
 
     def _build(self, show_viewer):
         import tempfile
@@ -221,7 +267,7 @@ class GenesisPlant(Plant):
             GenesisPlant._gs_inited = True
         self._gs = gs
         with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as f:
-            f.write(self._mjcf())
+            f.write(self._mjcf(visual=show_viewer))
             path = f.name
         # Pin the scene step to our control dt with a single substep, so one
         # scene.step() advances exactly `timestep` of physics (Genesis defaults to
@@ -230,26 +276,31 @@ class GenesisPlant(Plant):
         self._scene = gs.Scene(
             show_viewer=show_viewer,
             sim_options=gs.options.SimOptions(dt=self.timestep, substeps=1),
+            viewer_options=self._viewer_options(gs) if show_viewer else None,
         )
-        self._rotor = self._scene.add_entity(gs.morphs.MJCF(file=path))
+        self._ent = self._scene.add_entity(gs.morphs.MJCF(file=path))
         self._scene.build()
-        self._dof = self._rotor.get_joint("shaft").dof_idx_local
+        self._dof = self._ent.get_joint("shaft").dof_idx_local
+        if show_viewer:
+            self._carriage_dof = self._ent.get_joint("carriage_slide").dof_idx_local
         # Pure force control: zero Genesis's built-in per-DOF PD controller (else
         # it holds the joint and fights control_dofs_force) and widen the applied-
         # force range so our motor torque isn't clamped.
         idx = [self._dof]
         for setter, val in (("set_dofs_kp", [0.0]), ("set_dofs_kv", [0.0])):
-            fn = getattr(self._rotor, setter, None)
+            fn = getattr(self._ent, setter, None)
             if fn:
                 fn(val, idx)
-        frng = getattr(self._rotor, "set_dofs_force_range", None)
+        frng = getattr(self._ent, "set_dofs_force_range", None)
         if frng:
             frng([-1.0e3], [1.0e3], idx)
         self.reset()
 
     def reset(self):
-        self._rotor.set_dofs_position([self.cfg.start_angle], [self._dof])
-        self._rotor.set_dofs_velocity([0.0], [self._dof])
+        self._ent.set_dofs_position([self.cfg.start_angle], [self._dof])
+        self._ent.set_dofs_velocity([0.0], [self._dof])
+        if self._carriage_dof is not None:
+            self._ent.set_dofs_position([self.cfg.start_angle], [self._carriage_dof])
         self._tau = 0.0
 
     def apply_torque(self, tau: float):
@@ -257,18 +308,20 @@ class GenesisPlant(Plant):
 
     def step(self, dt: float):
         # friction is modeled in our torque (not Genesis damping) so wear is
-        # injectable at runtime; Genesis integrates inertia + hard-stop contact.
+        # injectable at runtime; Genesis integrates inertia + hard-stop range.
+        if self._carriage_dof is not None:    # slave the visual carriage to the shaft
+            self._ent.set_dofs_position([self.angle], [self._carriage_dof])
         total = self._tau + self.faults.friction_torque(self.velocity)
-        self._rotor.control_dofs_force([total], [self._dof])
+        self._ent.control_dofs_force([total], [self._dof])
         self._scene.step()
 
     @property
     def angle(self):
-        return float(self._rotor.get_dofs_position([self._dof])[0])
+        return float(self._ent.get_dofs_position([self._dof])[0])
 
     @property
     def velocity(self):
-        return float(self._rotor.get_dofs_velocity([self._dof])[0])
+        return float(self._ent.get_dofs_velocity([self._dof])[0])
 
 
 def make_plant(kind: str = "genesis", cfg: PlantConfig | None = None, **kw) -> Plant:
