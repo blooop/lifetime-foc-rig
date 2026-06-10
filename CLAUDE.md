@@ -17,7 +17,7 @@ facts to keep it working — follow them.
 
 ## Layout
 - `firmware/` — PlatformIO project (`board=esp32dev`, `framework=arduino`, SimpleFOC pinned to `Arduino-FOC.git#v2.2.1`). Active sketch: `src/main.cpp`; pure safety/motion math in `src/control_logic.h`; host unit tests in `test/`.
-- `panel/foc_panel.py` — custom PyQt5 control panel (GUI); `panel/lifecycle.py` + `panel/run_lifecycle.py` — endurance test. Tests in `panel/tests/`.
+- `panel/foc_panel.py` — custom PyQt5 control panel (GUI); `panel/rig_view.py` — 2D rig view (embedded in the GUI + standalone `pixi run viewer`); `panel/lifecycle.py` + `panel/run_lifecycle.py` — endurance test. Tests in `panel/tests/`.
 - Original makerbase docs/schematics/examples are a *separate* read-only reference checkout (location varies by setup).
 
 ## Toolchains — pixi (portable: Linux + macOS, Intel + Apple Silicon)
@@ -30,15 +30,22 @@ deprecated/fallback only — don't add new dependencies on them.
 ## Commands
 Run via pixi tasks from the repo root. **Serial port is auto-detected** (CH340 by USB
 VID); override with `FOC_PORT=<dev>` or `--port`/`--upload-port` if multiple devices.
+**There are no separate sim tasks**: `gui`/`viewer`/`lifecycle` auto-detect the rig —
+with no board attached they run the **modeled rig** (`panel/sim/`, pure Python) and badge
+themselves **SIMULATED RIG**. Force with `FOC_SIM=1` (sim even with a board) or
+`FOC_SIM=0` (wait for hardware).
 ```
 pixi run install-driver   # CH340 USB-serial driver (macOS; no-op on Linux)
 pixi run build       # compile firmware
 pixi run flash       # build + flash over USB (auto-detect port)
 pixi run monitor     # serial monitor @115200 (close the panel first)
-pixi run gui         # launch the GUI (12 V on so the board calibrates)
-pixi run lifecycle --cycles 5000 --vmeas 3.0   # headless endurance run
+pixi run gui         # GUI + embedded 2D rig view (12 V on so the board calibrates; no board = sim)
+pixi run viewer      # standalone 2D rig view (real board: passive; no board: sim demo cycles)
+pixi run lifecycle --cycles 5000 --vmeas 3.0   # endurance run (no board = sim + live GUI; hardware = headless; tagged in config.json)
+pixi run lifecycle --sim --cycles 30 --vmeas 20 --speed 4 --scenario wear  # forced/accelerated sim run (with live view)
+pixi run lifecycle --view --cycles 100   # hardware run WITH the live GUI · --headless = console-only even in sim
 pixi run plot        # view a finished run (newest, or `pixi run plot <run_dir>`)
-pixi run test        # Python tests (panel/tests) — no hardware needed
+pixi run test        # hardware-free Python tests (panel/tests), incl. the sim
 pixi run test-fw     # native firmware safety-logic unit tests — no hardware needed
 ```
 Only one program can own the serial port at a time — close the GUI before `monitor`/`lifecycle`.
@@ -46,16 +53,35 @@ Only one program can own the serial port at a time — close the GUI before `mon
 ## Tests (no hardware — for offline development)
 Two suites run with no board attached; CI (`.github/workflows/ci.yml`) runs both + `build`.
 - **Python** (`panel/tests/`, pytest, `pixi run test`): headless Qt via `QT_QPA_PLATFORM=offscreen`.
-  Covers `parse_line`/`find_serial_port`/`ziegler_nichols`/torque model and the **whole**
-  `LifecycleController` state machine, driven through a `FakeWorker` double + a controllable
-  `clock` fixture (see `panel/tests/conftest.py`). To test board-coupled logic, emit on the
-  FakeWorker's signals / call controller slots directly — never open a real serial port.
+  Covers `parse_line`/`find_serial_port`/`ziegler_nichols`/torque model, the **whole**
+  `LifecycleController` state machine (driven through a `FakeWorker` double + a controllable
+  `clock` fixture — see `panel/tests/conftest.py`), and the physics sim (`test_sim_*`). To test
+  board-coupled logic, emit on the FakeWorker's signals / call controller slots directly — never
+  open a real serial port.
 - **Firmware** (`firmware/test/`, PlatformIO `native`+Unity, `pixi run test-fw`): the safety/
   motion math is extracted into **`firmware/src/control_logic.h`** as pure globals-free functions
   (`computeTravelLimits`, `backstopMargin`/`vSafeFromMargin`, `glitchIsBad`, `profileVelStep`/
   `profileAngleStep`); `main.cpp` wires the `motor`/globals into them. Keep that header free of
   `Arduino.h`/`SimpleFOC.h` or the native build breaks. `platformio.ini` pins `default_envs =
   esp32dev` so `pio run` never tries to build the firmware under the `native` env.
+
+## Simulation / modeled rig (no hardware) — `panel/sim/` (see `panel/sim/README.md`)
+Runs the **whole real stack** (GUI/lifecycle/viewer/analysis, unchanged) against a modeled
+rig instead of the board — **automatically, whenever no board is detected** (the one
+decision point is `resolve_backend()` in `foc_panel.py`: `FOC_SIM=1` forces sim, `FOC_SIM=0`
+forces hardware, otherwise port-present = real rig; phantom `/dev/ttyS*` legacy UARTs never
+count as a board). The worker latches the choice once per session — a mid-run USB drop keeps
+retrying the board, never silently becomes a sim — and everything it drives shows a
+**SIMULATED RIG** badge/banner; sim lifecycle runs are tagged `"sim": true` in `config.json`.
+The seam is in `SerialWorker.run`: it opens a **`SimSerial`** instead of `serial.Serial()`.
+Behind it: **`SoftFirmware`** (a faithful Python port of `main.cpp` — control/homing/limits/
+backstop/watchdog/glitch + the `Vq→Iq→τ` model) drives the **`AnalyticPlant`** (pure-Python
+1-DOF; defaults match the hardware oracle: travel ≈200, `v_safe` ≈109, |Vq| ≈1.7 V). The
+earlier Genesis physics plant was **removed** — the analytic model matched the oracle without
+the heavy deps, so there is no separate `sim` pixi env anymore. Fault scenarios
+(`sim/scenarios.py`: wear, hall_slip, missed_hall, stall, glitch) validate the lifecycle
+aborts. Real-time by default; `--speed N` / `FOC_SIM_SPEED` accelerates (watchdog scales
+with it); `FOC_SIM_SCENARIO` injects a fault into any sim session.
 
 ## Current firmware (`firmware/src/main.cpp`) — safe, voltage-based
 - Modes: **velocity** (default), **angle**, **torque-voltage**. Voltage-based control only.
@@ -86,8 +112,16 @@ Motion profile uses a third letter **`P`**: `PA<v>`=acceleration [rad/s²], `PE<
 PyQt5 + pyqtgraph. The left control column is in a **scroll area** (never forces the window
 taller than the screen); **PID tuning is a collapsible group, collapsed by default**.
 Mode radio buttons, target slider, Enable/STOP, limit fields, (collapsible) PID-tuning fields,
-two live plots (target/vel/angle, and torque), a measured-torque readout, and a
-**relay-feedback velocity auto-tuner**.
+a **2D rig view** strip (top of the right column), two live plots (target/vel/angle, and
+torque), a measured-torque readout, and a **relay-feedback velocity auto-tuner**.
+- **2D rig view** (`panel/rig_view.py`, `RigView`): live schematic of the rig — rail, carriage
+  at position-from-home, MIN/MAX hall markers, dashed backstop lines — drawn purely from the
+  E-line telemetry, so it represents the **real rig** when a board is connected and the
+  **modeled rig** (orange SIMULATED RIG badge) when not. Hall-marker geometry is *learned*:
+  each rising endstop edge (while homed, not homing) snaps that marker to the reported
+  position, so the drawing tracks the as-built rig including slip; seeded at ±100 rad until
+  learned. Standalone window: `pixi run viewer` — passive on hardware (it only watches;
+  drive the rig from the GUI), homes + cycles as a demo on the modeled rig.
 - **Torque is a model estimate** from `Vq`: `Iq=(Vq−Ke·ω)/R`, `τ=Kt·Iq`, `Kt=Ke=9.549/KV`. Set
   **Phase resistance R** and **KV**; a **Kt-override** field is a calibration hook (0 = use KV). (The
   read-only current sense's measured `Iq` is now usable — the panel converts the monitor's mA field to
