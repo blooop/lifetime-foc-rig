@@ -16,8 +16,8 @@ facts to keep it working — follow them.
   - **Endstop B (MAX) → GPIO 23** (plain GPIO).
 
 ## Layout
-- `firmware/` — PlatformIO project (`board=esp32dev`, `framework=arduino`, SimpleFOC pinned to `Arduino-FOC.git#v2.2.1`). Active sketch: `src/main.cpp`.
-- `panel/foc_panel.py` — custom PyQt5 control panel (GUI); `panel/lifecycle.py` + `panel/run_lifecycle.py` — endurance test.
+- `firmware/` — PlatformIO project (`board=esp32dev`, `framework=arduino`, SimpleFOC pinned to `Arduino-FOC.git#v2.2.1`). Active sketch: `src/main.cpp`; pure safety/motion math in `src/control_logic.h`; host unit tests in `test/`.
+- `panel/foc_panel.py` — custom PyQt5 control panel (GUI); `panel/lifecycle.py` + `panel/run_lifecycle.py` — endurance test. Tests in `panel/tests/`.
 - Original makerbase docs/schematics/examples are a *separate* read-only reference checkout (location varies by setup).
 
 ## Toolchains — pixi (portable: Linux + macOS, Intel + Apple Silicon)
@@ -39,11 +39,27 @@ pixi run gui         # launch the GUI (12 V on so the board calibrates)
 pixi run lifecycle --cycles 5000 --vmeas 3.0   # headless endurance run
 pixi run plot        # view a finished run (newest, or `pixi run plot <run_dir>`)
 pixi run test        # hardware-free Python tests (panel/tests), incl. the sim
+pixi run test-fw     # native firmware safety-logic unit tests — no hardware needed
 # --- physics simulation, NO hardware (Genesis plant behind the serial seam) ---
 pixi run -e sim gui-sim                     # GUI vs the Genesis physics sim
 pixi run -e sim lifecycle-sim --cycles 30 --vmeas 20 --speed 2   # headless sim run
 ```
 Only one program can own the serial port at a time — close the GUI before `monitor`/`lifecycle`.
+
+## Tests (no hardware — for offline development)
+Two suites run with no board attached; CI (`.github/workflows/ci.yml`) runs both + `build`.
+- **Python** (`panel/tests/`, pytest, `pixi run test`): headless Qt via `QT_QPA_PLATFORM=offscreen`.
+  Covers `parse_line`/`find_serial_port`/`ziegler_nichols`/torque model, the **whole**
+  `LifecycleController` state machine (driven through a `FakeWorker` double + a controllable
+  `clock` fixture — see `panel/tests/conftest.py`), and the physics sim (`test_sim_*`). To test
+  board-coupled logic, emit on the FakeWorker's signals / call controller slots directly — never
+  open a real serial port.
+- **Firmware** (`firmware/test/`, PlatformIO `native`+Unity, `pixi run test-fw`): the safety/
+  motion math is extracted into **`firmware/src/control_logic.h`** as pure globals-free functions
+  (`computeTravelLimits`, `backstopMargin`/`vSafeFromMargin`, `glitchIsBad`, `profileVelStep`/
+  `profileAngleStep`); `main.cpp` wires the `motor`/globals into them. Keep that header free of
+  `Arduino.h`/`SimpleFOC.h` or the native build breaks. `platformio.ini` pins `default_envs =
+  esp32dev` so `pio run` never tries to build the firmware under the `native` env.
 
 ## Simulation (no hardware) — `panel/sim/` (see `panel/sim/README.md`, `GENESIS_SIM_PLAN.md`)
 Runs the **whole real stack** (GUI/lifecycle/analysis, unchanged) against a physics sim

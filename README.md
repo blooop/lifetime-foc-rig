@@ -62,6 +62,24 @@ pixi run plot        # view a finished run's wear trends + τ(pos) heatmap (newe
 Runs log to `panel/lifecycle_runs/<timestamp>/` (`summary.csv`, `profile.csv`). The panel
 shows live trends during a run; `pixi run plot` reopens that view for a finished run.
 
+## Tests (no hardware required)
+Both layers run on a desktop with no board attached, so development can continue offline.
+```
+pixi run test       # Python: panel serial-parse, find_serial_port, autotune math,
+                    #         torque model, and the full LifecycleController state machine
+pixi run test-fw    # firmware: native (host) unit tests for the safety/motion math
+```
+- **Python** (`panel/tests/`, pytest): PyQt-coupled code runs headless via
+  `QT_QPA_PLATFORM=offscreen`. The `LifecycleController` is driven through a `FakeWorker`
+  test double (records `send()`s, emits the telem/slip/endstop/ready signals) plus a
+  controllable clock — homing→run→park sequencing, cycle counting, slip/Iq/backstop/stall
+  aborts, and CSV/resume are all exercised with no serial link.
+- **Firmware** (`firmware/test/`, PlatformIO `native` + Unity): the load-bearing safety math
+  lives in `firmware/src/control_logic.h` as pure, globals-free functions (travel-limit clamp,
+  overtravel backstop, `v_safe` sizing, the time-aware glitch filter, and the trapezoidal
+  motion profile); `main.cpp` calls them on-target. `pixi run build` is also a compile smoke
+  test for the real board. CI (`.github/workflows/ci.yml`) runs all three on push/PR.
+
 ## Notes
 - foc_current torque control caused a runaway here — firmware is voltage-based only.
   The current sense is linked **read-only** (`skip_align`; torque_controller stays voltage); never foc_current.
