@@ -20,19 +20,21 @@ import time
 from .plant import PlantConfig, make_plant
 from .soft_firmware import SoftFirmware
 
-# Defaults; overridable via configure() (run_sim.py) or env vars.
+# Defaults; overridable via configure() or env vars (FOC_SIM_SPEED, FOC_SIM_HZ,
+# FOC_SIM_SCENARIO) — the env vars let `pixi run gui` / `lifecycle` tweak the
+# modeled rig without a separate sim launcher.
 _OPTS = {
-    "plant": os.environ.get("FOC_SIM_PLANT", "genesis"),
+    "plant": os.environ.get("FOC_SIM_PLANT", "analytic"),
     "speed": float(os.environ.get("FOC_SIM_SPEED", "1.0")),
     "control_hz": float(os.environ.get("FOC_SIM_HZ", "1000")),
-    "viewer": os.environ.get("FOC_SIM_VIEWER", "") not in ("", "0"),
+    "scenario": os.environ.get("FOC_SIM_SCENARIO", ""),
     "cfg": None,          # PlantConfig | None
     "on_step": None,      # callable(firmware, plant, now_us, dt) | None  (scenarios)
 }
 
 
 def configure(**opts):
-    """Set sim options before the panel/lifecycle opens the port (run_sim.py)."""
+    """Set sim options before the panel/lifecycle opens the port."""
     _OPTS.update({k: v for k, v in opts.items() if v is not None})
 
 
@@ -67,12 +69,10 @@ class SimSerial:
     # ---- serial.Serial API ----
     def open(self):
         cfg = _OPTS["cfg"] or PlantConfig()
-        kw = {}
-        if _OPTS["plant"] == "genesis":
-            kw["timestep"] = 1.0 / max(50.0, _OPTS["control_hz"])   # physics dt == control dt
-            if _OPTS["viewer"]:
-                kw["show_viewer"] = True
-        self.plant = make_plant(_OPTS["plant"], cfg, **kw)
+        if _OPTS["on_step"] is None and _OPTS["scenario"]:
+            from .scenarios import make_scenario
+            _OPTS["on_step"] = make_scenario(_OPTS["scenario"])
+        self.plant = make_plant(_OPTS["plant"], cfg)
         # scale the sim-time watchdog up for accelerated runs (keepalive is wall-clock)
         wd = int(3000 * max(1.0, _OPTS["speed"]))
         self.firmware = SoftFirmware(self.plant, self._emit, cfg, watchdog_ms=wd)

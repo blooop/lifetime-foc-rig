@@ -20,7 +20,7 @@ def _collect(s, seconds, writes=()):
 
 
 def _open(speed=50):
-    configure(plant="analytic", speed=speed, control_hz=1000, on_step=None, viewer=False)
+    configure(plant="analytic", speed=speed, control_hz=1000, on_step=None)
     s = SimSerial()
     s.port, s.baudrate, s.timeout = "sim", 115200, 0.05   # as SerialWorker sets them
     s.dtr = False

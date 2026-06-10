@@ -7,7 +7,9 @@ state (friction, hall offsets, hall disable) or inject sensor glitches over sim
 time, so the real firmware + lifecycle code path reacts exactly as it would on a
 degrading rig.
 
-See GENESIS_SIM_PLAN.md §7 for the fault -> abort mapping.
+Fault -> abort mapping: hall_slip -> slip-span abort; wear -> sustained-Iq dwell;
+missed_hall -> overtravel backstop (disable-on-trip); stall -> position-progress
+stall detector; glitch -> FilteredAS5600 rejection (must NOT cut the motor out).
 """
 from __future__ import annotations
 
