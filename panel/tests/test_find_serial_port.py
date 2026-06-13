@@ -84,6 +84,29 @@ def test_backend_forced_sim_despite_board(monkeypatch, no_env):
     assert foc_panel.resolve_backend() == (True, None)
 
 
+@pytest.mark.parametrize('val', ['true', 'TRUE', 'yes', 'on', 'On'])
+def test_backend_forced_sim_string_values(monkeypatch, no_env, val):
+    # FOC_SIM accepts case-insensitive truthy words, not just '1'
+    monkeypatch.setenv('FOC_SIM', val)
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (True, None)
+
+
+@pytest.mark.parametrize('val', ['false', 'FALSE', 'no', 'off', 'Off'])
+def test_backend_forced_hardware_string_values(monkeypatch, no_env, val):
+    # ...and case-insensitive falsy words force hardware (port still resolved)
+    monkeypatch.setenv('FOC_SIM', val)
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (False, '/dev/ttyUSB0')
+
+
+def test_backend_unknown_string_falls_through_to_auto(monkeypatch, no_env):
+    # an unrecognized FOC_SIM value is ignored -> auto-detect (board present = real)
+    monkeypatch.setenv('FOC_SIM', 'maybe')
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (False, '/dev/ttyUSB0')
+
+
 def test_backend_forced_hardware_without_board(monkeypatch, no_env):
     monkeypatch.setenv('FOC_SIM', '0')
     _ports(monkeypatch, [])
