@@ -20,12 +20,16 @@ pytest-qt = "*"       # offscreen-Qt helpers for the controller/state-machine te
 # Ports are auto-detected (PlatformIO for flash/monitor; the panel detects the CH340
 # by USB VID:PID). Override with the FOC_PORT env var or `--upload-port`/`-p` if you
 # have multiple serial devices: e.g. `FOC_PORT=/dev/tty.usbserial-110 pixi run panel`.
+# gui / viewer / lifecycle auto-detect the rig: with NO board attached they run the
+# modeled rig (panel/sim, pure Python) and badge themselves SIMULATED RIG.
+# Force with FOC_SIM=1 (sim even with a board) / FOC_SIM=0 (wait for hardware).
 install-driver = { cmd = "bash scripts/install-ch340-driver.sh", description = "Install/verify the CH340 USB-serial driver (macOS; no-op on Linux)" }
 build = { cmd = "pio run", cwd = "firmware", description = "Compile the firmware" }
 flash = { cmd = "pio run -t upload", cwd = "firmware", description = "Build + flash over USB (auto-detects the port)" }
 monitor = { cmd = "pio device monitor -b 115200", cwd = "firmware", description = "Serial monitor (close the panel first — one owner of the port)" }
-gui = { cmd = "python foc_panel.py", cwd = "panel", description = "Launch the PyQt control panel (12 V must be on so the board calibrates)" }
-lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Headless lifecycle endurance runner — args pass through, e.g. pixi run lifecycle --cycles 1000 --vmeas 8" }
+gui = { cmd = "python foc_panel.py", cwd = "panel", description = "PyQt control panel + 2D rig view (real board if detected, else the modeled rig)" }
+viewer = { cmd = "python -u rig_view.py", cwd = "panel", description = "Standalone 2D rig view — real board: passive representation; no board: modeled-rig demo (homes + cycles)" }
+lifecycle = { cmd = "python run_lifecycle.py", cwd = "panel", description = "Lifecycle endurance runner (no board -> modeled rig + live view; hardware -> headless). e.g. pixi run lifecycle --cycles 1000 --vmeas 8 [--view|--headless]" }
 plot = { cmd = "python plot_lifecycle.py", cwd = "panel", description = "View a finished lifecycle run (newest by default; or `pixi run plot <run_dir>`)" }
 # --- tests (no hardware required) ---
 # QT_QPA_PLATFORM=offscreen lets the PyQt-coupled tests run headless (no display / no board).

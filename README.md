@@ -11,9 +11,16 @@ real *data* USB cable). Runs on Linux and macOS via [pixi](https://pixi.sh).
   (safe voltage-based SimpleFOC firmware: velocity/angle/torque-voltage,
   boots disabled, 1 V limit, armed glitch filter, 100 kHz I2C, fast I2C timeout).
 - `panel/foc_panel.py` — custom PyQt5 control panel: mode radios, target slider,
-  enable/STOP, limits, live PID fields, live plots (target/vel/angle + estimated
-  torque), and a relay-feedback velocity auto-tuner. Talks the SimpleFOC
+  enable/STOP, limits, live PID fields, a 2D rig view, live plots (target/vel/angle
+  + estimated torque), and a relay-feedback velocity auto-tuner. Talks the SimpleFOC
   Commander protocol over serial (motor letter `M`).
+- `panel/rig_view.py` — 2D rig view (embedded in the panel; standalone via
+  `pixi run viewer`): rail, carriage, hall markers (learned live from telemetry),
+  backstop lines.
+- `panel/sim/` — the modeled rig (pure-Python firmware port + plant). The GUI,
+  viewer, and lifecycle runner **auto-detect**: board present → real rig; no board
+  → the modeled rig with a clear **SIMULATED RIG** badge. `FOC_SIM=1`/`FOC_SIM=0`
+  forces sim/hardware. See `panel/sim/README.md`.
 
 ## Features
 - Voltage-based velocity / angle / torque control with live tuning + auto-tune.
@@ -55,10 +62,17 @@ have multiple serial devices.
 pixi run build       # compile firmware
 pixi run flash       # build + flash over USB (auto-detects the port)
 pixi run monitor     # serial monitor (close the panel first)
-pixi run gui         # launch the PyQt control panel (12 V on so the board calibrates)
-pixi run lifecycle --cycles 5000 --vmeas 3.0   # headless endurance run (close the panel first)
+pixi run gui         # PyQt control panel + 2D rig view (12 V on so the board calibrates)
+pixi run viewer      # standalone 2D rig view (real board: passive watch; no board: sim demo)
+pixi run lifecycle --cycles 5000 --vmeas 3.0   # endurance run (close the panel first)
 pixi run plot        # view a finished run's wear trends + τ(pos) heatmap (newest, or pass a run dir)
 ```
+`gui`/`viewer`/`lifecycle` need no board: with none detected they run the **modeled
+rig** (`panel/sim/`) and badge themselves **SIMULATED RIG** — same code path, same
+telemetry, nothing physical. Sim lifecycle runs record `"sim": true` in `config.json`.
+A lifecycle run against the modeled rig opens the **live GUI** (2D rig view + plots +
+wear trends) by default so it looks just like driving the real rig; on real hardware it
+stays headless for unattended runs. Override with `--view` / `--headless`.
 Runs log to `panel/lifecycle_runs/<timestamp>/` (`summary.csv`, `profile.csv`). The panel
 shows live trends during a run; `pixi run plot` reopens that view for a finished run.
 

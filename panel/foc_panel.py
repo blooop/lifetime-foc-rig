@@ -10,6 +10,7 @@ import numpy as np
 from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
 from lifecycle import LifecycleController, LifecycleConfig, kt_from_kv, model_iq
+from rig_view import RigView
 
 BAUD = 115200
 
@@ -17,8 +18,11 @@ BAUD = 115200
 def find_serial_port():
     """Resolve the board's serial port portably (Linux + macOS). $FOC_PORT wins;
     otherwise pick the CH340 by USB VID (1a86), then common device-name patterns
-    (ttyUSB/ttyACM on Linux, usbserial/wchusbserial/usbmodem on macOS), then the first
-    available port, then a Linux fallback."""
+    (ttyUSB/ttyACM on Linux, usbserial/wchusbserial/usbmodem on macOS), then any
+    port with a USB VID. Returns None when no plausible board is present — the
+    signal that there is no real rig (the stack then runs the modeled rig).
+    Phantom legacy ports (Linux lists 32 motherboard /dev/ttyS* UARTs, macOS
+    Bluetooth ports) have no USB VID and never count."""
     override = os.environ.get('FOC_PORT')
     if override:
         return override
@@ -30,9 +34,26 @@ def find_serial_port():
         d = p.device or ''
         if any(k in d for k in ('usbserial', 'wchusbserial', 'usbmodem', 'ttyUSB', 'ttyACM')):
             return p.device
-    if ports:
-        return ports[0].device
-    return '/dev/ttyUSB0'                  # last-resort fallback
+    for p in ports:                       # any real USB-serial device (has a USB VID)
+        if p.vid is not None:
+            return p.device
+    return None                            # no plausible board -> modeled rig
+
+
+def resolve_backend(port_override=None):
+    """Decide, once per session, whether we are driving the REAL rig or the
+    modeled (simulated-in-code) rig. Returns (sim: bool, port: str | None).
+
+    FOC_SIM=1 forces the sim even with a board attached; FOC_SIM=0 forces
+    hardware (the worker waits/retries for a board). Otherwise auto-detect: a
+    serial port present means the real rig, none means the modeled rig."""
+    env = os.environ.get('FOC_SIM', '').strip().lower()
+    if env in ('1', 'true', 'yes', 'on'):
+        return True, None
+    port = port_override or find_serial_port()
+    if env in ('0', 'false', 'no', 'off'):
+        return False, port
+    return port is None, port
 
 
 def parse_line(s):
@@ -111,6 +132,7 @@ class SerialWorker(QtCore.QThread):
     endstop = QtCore.pyqtSignal(int, int, int, int, float, int)  # minTrig, maxTrig, homed, homing, pos, backstop
     slip = QtCore.pyqtSignal(int, float)  # which (0=min,1=max), shaft_angle at the hall edge
     ready = QtCore.pyqtSignal()
+    sim_mode = QtCore.pyqtSignal(bool)  # True = modeled rig (no hardware), emitted once at connect
     tune_status = QtCore.pyqtSignal(str)
     tune_done = QtCore.pyqtSignal(dict)
 
@@ -119,6 +141,7 @@ class SerialWorker(QtCore.QThread):
         self._run = True
         self._tx = queue.Queue()
         self.port_override = port      # explicit port; None -> auto-detect each (re)connect
+        self.sim = None                # None = undecided; resolved once on first connect
         self.ser = None
         self._pending_tune = None
         self.tuning = False
@@ -149,9 +172,24 @@ class SerialWorker(QtCore.QThread):
         # thread (long unattended runs). Reopening auto-resets the board -> 'Motor ready'
         # -> ready signal, which the lifecycle controller uses to re-home and resume.
         while self._run:
-            port = self.port_override or find_serial_port()
+            if self.sim is None:
+                # Decide real-vs-modeled rig ONCE per worker: a mid-run USB drop
+                # must keep retrying the board, never silently become a sim.
+                self.sim, port = resolve_backend(self.port_override)
+                self.sim_mode.emit(self.sim)
+                if self.sim:
+                    self.line.emit('## SIMULATED RIG — no board detected; running the modeled rig (set FOC_SIM=0 to wait for hardware)')
+            else:
+                port = None if self.sim else (self.port_override or find_serial_port())
             try:
-                self.ser = serial.Serial()
+                if self.sim:
+                    from sim.sim_serial import SimSerial   # modeled rig behind the serial seam
+                    self.ser = SimSerial()
+                    port = 'sim://rig'
+                else:
+                    if not port:
+                        raise serial.SerialException('no board detected (plug in the rig or set FOC_PORT)')
+                    self.ser = serial.Serial()
                 self.ser.port, self.ser.baudrate, self.ser.timeout = port, BAUD, 0.05
                 self.ser.dtr = False; self.ser.rts = False
                 self.ser.open()
@@ -270,6 +308,7 @@ class Panel(QtWidgets.QWidget):
         self.worker.telem.connect(self.on_telem)
         self.worker.endstop.connect(self.on_endstop)
         self.worker.ready.connect(self.on_ready)
+        self.worker.sim_mode.connect(self.on_sim_mode)
         self.worker.tune_status.connect(lambda s: self.tune_lbl.setText(s))
         self.worker.tune_done.connect(self.on_tune_done)
         self.slip_buf = deque(maxlen=4)   # recent hall-edge angles for the live readout
@@ -407,9 +446,13 @@ class Panel(QtWidgets.QWidget):
         left.addWidget(rbox)
         left.addStretch(1)
 
-        # right: plots + log
+        # right: 2D rig view + plots + log
         right = QtWidgets.QVBoxLayout(); main.addLayout(right, 1)
         pg.setConfigOptions(antialias=True)
+        # live schematic of the rig (real board, or the modeled rig with a SIM badge)
+        self.rig = RigView(); self.rig.setMinimumHeight(170); self.rig.setMaximumHeight(230)
+        self.worker.endstop.connect(self.rig.on_endstop)
+        right.addWidget(self.rig, 1)
         self.plot = pg.PlotWidget(title='Live telemetry'); self.plot.addLegend(); self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setLabel('bottom', 'time', 's')
         self.c_tar = self.plot.plot(pen=pg.mkPen('y', width=2), name='target')
@@ -551,7 +594,19 @@ class Panel(QtWidgets.QWidget):
         if self.lc and self.lc.running:
             return
         cfg = LifecycleConfig(v_measure=self.lc_vmeas.value(), target_cycles=self.lc_cycles.value(),
-                              iq_abort=self.lc_iqab.value(), slip_abort_frac=self.lc_slipab.value() / 100.0)
+                              iq_abort=self.lc_iqab.value(), slip_abort_frac=self.lc_slipab.value() / 100.0,
+                              sim=bool(self.worker.sim))   # tag sim runs so data isn't mistaken for hardware
+        self.start_lifecycle(cfg)
+
+    def start_lifecycle(self, cfg):
+        """Start an endurance run from a prepared config and wire up the live views
+        (log, status, rig view, wear-trend window). Shared by the Start button and
+        the headless runner's `--view` mode so both show identical live data."""
+        if self.lc and self.lc.running:
+            return
+        # reflect the config into the UI so a programmatically-started run reads correctly
+        self.lc_vmeas.setValue(cfg.v_measure); self.lc_cycles.setValue(cfg.target_cycles)
+        self.lc_iqab.setValue(cfg.iq_abort); self.lc_slipab.setValue(cfg.slip_abort_frac * 100.0)
         self.lc = LifecycleController(cfg, self)
         self.lc.kt_provider = self.kt          # use the panel's live Kt (override or KV)
         self.lc.r_provider = lambda: self.res.value()   # live phase resistance for the Vq torque model
@@ -564,6 +619,7 @@ class Panel(QtWidgets.QWidget):
         self.lc_start.setEnabled(False); self.lc_stop.setEnabled(True)
         self.enable_btn.setChecked(True)       # reflect that the firmware is now enabled
         self.log.appendPlainText('# LIFECYCLE START — homing then cycling')
+        return self.lc
 
     def on_lc_stop(self):
         if self.lc:
@@ -655,6 +711,12 @@ class Panel(QtWidgets.QWidget):
         self.worker.send(f"MLV{self.velim.value():.1f}")
         self.worker.send(f"PA{self.prof_acc.value():.1f}")
         self.worker.send(f"PE{1 if self.prof_en.isChecked() else 0}")
+
+    def on_sim_mode(self, sim):
+        """Worker resolved real-vs-modeled rig (once, at connect)."""
+        self.rig.set_sim(sim)
+        self.setWindowTitle('MKS ESP32 FOC — Control Panel'
+                            + ('  [SIMULATED RIG — no hardware]' if sim else ''))
 
     def on_ready(self):
         self.set_controls_enabled(True)

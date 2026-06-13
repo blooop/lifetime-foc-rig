@@ -1,4 +1,5 @@
-"""find_serial_port(): $FOC_PORT > CH340 VID > name heuristics > first port > fallback."""
+"""find_serial_port(): $FOC_PORT > CH340 VID > name heuristics > first port > None.
+resolve_backend(): FOC_SIM override > auto (port present = real rig, none = modeled)."""
 import pytest
 import foc_panel
 
@@ -35,17 +36,83 @@ def test_name_heuristic_when_no_vid(monkeypatch, no_env):
     assert foc_panel.find_serial_port() == '/dev/tty.wchusbserial1420'
 
 
-def test_first_port_when_no_match(monkeypatch, no_env):
-    _ports(monkeypatch, [FakePort('/dev/weird0'), FakePort('/dev/weird1')])
-    assert foc_panel.find_serial_port() == '/dev/weird0'
+def test_first_usb_port_when_no_match(monkeypatch, no_env):
+    # odd name but a real USB VID -> still a plausible board
+    _ports(monkeypatch, [FakePort('/dev/weird0'), FakePort('/dev/weird1', vid=0x0403)])
+    assert foc_panel.find_serial_port() == '/dev/weird1'
 
 
-def test_fallback_when_no_ports(monkeypatch, no_env):
+def test_none_when_no_ports(monkeypatch, no_env):
+    # no serial hardware at all -> None, the trigger for the modeled rig
     _ports(monkeypatch, [])
-    assert foc_panel.find_serial_port() == '/dev/ttyUSB0'
+    assert foc_panel.find_serial_port() is None
+
+
+def test_phantom_legacy_ports_dont_count(monkeypatch, no_env):
+    # Linux lists 32 motherboard /dev/ttyS* UARTs with no USB VID; they must not
+    # be mistaken for the rig (that would silently mask the modeled-rig fallback)
+    _ports(monkeypatch, [FakePort(f'/dev/ttyS{i}') for i in range(32)])
+    assert foc_panel.find_serial_port() is None
 
 
 def test_vid_beats_name_heuristic(monkeypatch, no_env):
     # a name-matching port and a VID-matching port -> VID wins (checked first)
     _ports(monkeypatch, [FakePort('/dev/ttyUSB0'), FakePort('/dev/ttyACM9', vid=0x1A86)])
     assert foc_panel.find_serial_port() == '/dev/ttyACM9'
+
+
+# ---- resolve_backend: the one decision point for real-vs-modeled rig ----
+
+@pytest.fixture
+def no_sim_env(monkeypatch):
+    monkeypatch.delenv('FOC_SIM', raising=False)
+
+
+def test_backend_auto_board_present(monkeypatch, no_env, no_sim_env):
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (False, '/dev/ttyUSB0')
+
+
+def test_backend_auto_no_board(monkeypatch, no_env, no_sim_env):
+    _ports(monkeypatch, [])
+    assert foc_panel.resolve_backend() == (True, None)
+
+
+def test_backend_forced_sim_despite_board(monkeypatch, no_env):
+    monkeypatch.setenv('FOC_SIM', '1')
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (True, None)
+
+
+@pytest.mark.parametrize('val', ['true', 'TRUE', 'yes', 'on', 'On'])
+def test_backend_forced_sim_string_values(monkeypatch, no_env, val):
+    # FOC_SIM accepts case-insensitive truthy words, not just '1'
+    monkeypatch.setenv('FOC_SIM', val)
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (True, None)
+
+
+@pytest.mark.parametrize('val', ['false', 'FALSE', 'no', 'off', 'Off'])
+def test_backend_forced_hardware_string_values(monkeypatch, no_env, val):
+    # ...and case-insensitive falsy words force hardware (port still resolved)
+    monkeypatch.setenv('FOC_SIM', val)
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (False, '/dev/ttyUSB0')
+
+
+def test_backend_unknown_string_falls_through_to_auto(monkeypatch, no_env):
+    # an unrecognized FOC_SIM value is ignored -> auto-detect (board present = real)
+    monkeypatch.setenv('FOC_SIM', 'maybe')
+    _ports(monkeypatch, [FakePort('/dev/ttyUSB0', vid=0x1A86)])
+    assert foc_panel.resolve_backend() == (False, '/dev/ttyUSB0')
+
+
+def test_backend_forced_hardware_without_board(monkeypatch, no_env):
+    monkeypatch.setenv('FOC_SIM', '0')
+    _ports(monkeypatch, [])
+    assert foc_panel.resolve_backend() == (False, None)   # worker waits/retries for a board
+
+
+def test_backend_port_override_means_hardware(monkeypatch, no_sim_env):
+    _ports(monkeypatch, [])
+    assert foc_panel.resolve_backend('/dev/ttyMINE') == (False, '/dev/ttyMINE')

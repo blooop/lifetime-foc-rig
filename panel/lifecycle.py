@@ -51,6 +51,7 @@ class LifecycleConfig:
     phase_resistance: float = 0.15    # ohm; for the Vq torque model Iq=(Vq-Ke·ω)/R
     out_root: str = RUNS_ROOT
     resume_dir: str = ''              # if set, resume cycle count from this run dir's state.json
+    sim: bool = False                 # run was against the modeled rig (recorded in config.json)
 
 
 class LifecycleController(QtCore.QObject):
